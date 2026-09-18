@@ -179,18 +179,25 @@ class GlassGLWidget(QOpenGLWidget):
 
         win 端靠 SetWindowDisplayAffinity 排除自己; mac 上 sharingType=None 实测无效,
         改用 BelowWindow 以自身窗口为参照 (mac/capture.py)。
+        
+        窗口 ID 获取可能需要等待 AppKit 完全初始化，所以用 QTimer 延迟重试。
         """
         self._install_native_window_props()
         if not self._no_exclude:
-            wid = self._cg_window_id()
-            if wid:
-                self.capturer.set_exclude_window(wid)
-            else:
-                print("[警告] 拿不到 CGWindowID, 截图可能包含自身 (会反馈成纯色)")
+            # 延迟 100ms 重试，给 AppKit 时间更新窗口列表
+            QTimer.singleShot(100, self._setup_window_exclusion)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
+
+    def _setup_window_exclusion(self):
+        """延迟获取窗口 ID 并设置截图排除。"""
+        wid = self._cg_window_id()
+        if wid:
+            self.capturer.set_exclude_window(wid)
+        else:
+            print("[警告] 拿不到 CGWindowID, 截图可能包含自身 (会反馈成纯色)")
 
     def _native_window(self):
         try:

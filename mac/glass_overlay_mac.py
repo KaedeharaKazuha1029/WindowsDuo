@@ -150,16 +150,11 @@ class GlassGLWidget(QOpenGLWidget):
         self._gl_ready = False
         self._no_exclude = False
 
-        self.shader = str(CFG.get("shader", "recede"))
-        self.refresh_hz = float(CFG.get("refresh_hz", 6))
-        self.eye_h = float(CFG.get("eye_dist_h", 6.0))
-        self.recession = float(CFG.get("recession", 1.0))
-        self.max_sep_deg = float(CFG.get("max_sep_deg", 88.0))
+        self.refresh_hz = float(CFG.get("refresh_hz", 3))
+        self.max_tilt = float(CFG.get("max_tilt_deg", 88.0)) * DEG2RAD
+        self.eye_h = float(CFG.get("eye_dist_h", 2.0))
         self.spread = float(CFG.get("blur_spread", 0.42))
-        self.max_dim = float(CFG.get("max_dim", 1.0))
-        self.dim_floor = float(CFG.get("dim_floor", 0.2))
-        self.dim_reach = float(CFG.get("dim_reach", 0.5))
-        self.dim_curve = float(CFG.get("dim_curve", 1.6))
+        self.dark = float(CFG.get("darkening", 0.001))
         self.max_taps = int(CFG.get("max_taps", 32))
         self.smoothing = float(CFG.get("smoothing", 0.22))
 
@@ -476,7 +471,7 @@ def main():
 
     print("=" * 62)
     print("iPhone Duo 悬浮玻璃 · macOS 端")
-    print(f"  铰链=屏幕底边  最大转角 {CFG.get('max_sep_deg')}°  "
+    print(f"  铰链=屏幕底边  最大转角 {CFG.get('max_tilt_deg')}°  "
           f"眼距 {CFG.get('eye_dist_h')}x屏高")
     print(f"  起效角 {CFG.get('threshold_angle')}°  跨度 {CFG.get('span_angle')}°  "
           f"blur_spread={CFG.get('blur_spread')}")

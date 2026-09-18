@@ -1,109 +1,124 @@
 # WindowsDuo macOS Port
 
-macOS implementation of WindowsDuo, combining Mac-Duo's native macOS interfaces with WindowsDuo's shader-based rendering.
+macOS implementation of WindowsDuo using native lid sensor and OpenGL Core profile rendering.
 
-## What is this?
+## Overview
 
-This is a **software-only** port that uses your MacBook's built-in lid angle sensor (no ESP32 hardware needed). When you close the lid partway, the screen content recedes backward with spatial blur and fade-to-dark — the same "Duo" effect as the Windows version and iPhone's native implementation.
+This is a **software-only** port that uses your MacBook's built-in lid angle sensor (no ESP32 hardware needed). When you close the lid partway, the screen content undergoes the same "Duo" glass effect as the Windows version — spatial blur, darkening, and geometric distortion driven by the closing angle.
 
-## Key differences from Windows version
+## Key Features
 
-- **No hardware**: Uses MacBook's built-in HID lid angle sensor (0.01° precision, no permissions required)
-- **Native screen capture**: CGWindowListCreateImage with self-exclusion (overlay doesn't capture itself)
-- **OpenGL Core profile**: Shaders rewritten for Core 3.3+ (macOS doesn't support compatibility profile)
-- **Recession geometry**: Default shader uses Mac-Duo's "recede backward" projection instead of Windows' "push off top edge"
-- **Intent recognition**: Mac-Duo's state machine prevents false triggers when lid is stationary at normal angles
-
-## Requirements
-
-- macOS with built-in lid angle sensor (any MacBook with HID report 0x05AC/0x20/0x8A)
-- Python 3.9+
-- Screen Recording permission (granted on first run)
+- **Native lid sensor**: MacBook's built-in HID sensor (0.01° precision, ~27Hz)
+- **Intent recognition**: State machine prevents false triggers when lid is stationary
+- **OpenGL Core profile**: Rewritten shaders compatible with macOS (4.1 via Metal backend)
+- **Self-exclusion**: Uses `kCGWindowListOptionOnScreenBelowWindow` to prevent overlay feedback
+- **Effect parameters**: Fully aligned with WindowsDuo original (eye_dist_h=2.0, darkening=0.001, refresh_hz=3)
 
 ## Installation
 
 ```bash
-# Create virtual environment
+# Install dependencies
 python3 -m venv .venv-mac
 source .venv-mac/bin/activate
+pip install PyQt6 PyOpenGL numpy pyobjc-framework-Cocoa pyobjc-framework-Quartz
 
-# Install dependencies
-pip install PyQt6 PyOpenGL numpy mss pyserial Pillow \
-    pyobjc-framework-Cocoa pyobjc-framework-Quartz
+# Grant screen recording permission
+# System Settings → Privacy & Security → Screen Recording → Add Terminal/Python
 ```
 
 ## Usage
 
+### Automatic mode (default)
 ```bash
-# Self-test (sensor, permissions, screenshot, OpenGL)
-python mac/glass_overlay_mac.py --selftest
-
-# Manual mode (keyboard control: up/down for intensity, ESC to exit)
-python mac/glass_overlay_mac.py --manual
-
-# Normal mode (lid angle driven)
 python mac/glass_overlay_mac.py
 ```
+Effect triggers automatically when closing lid below 90°.
+
+### Manual mode (keyboard control)
+```bash
+python mac/glass_overlay_mac.py --manual
+```
+- `↑`/`w`: +3% intensity
+- `↓`/`s`: -3% intensity
+- `→`/`d`: max (100%)
+- `←`/`a`: clear (0%)
+- `r`: toggle auto/manual
+- `ESC`/`q`: quit
+
+### Selftest
+```bash
+python mac/glass_overlay_mac.py --selftest
+```
+Checks sensor, permissions, capture, and OpenGL without showing overlay.
 
 ## Configuration
 
-Edit `mac/config.json` to tune:
+Edit `mac/config.json` to adjust parameters:
 
-- **Intent recognition**: `threshold_angle`, `span_angle`, `hysteresis`, `dwell_duration`
-- **Geometry**: `eye_dist_h` (viewing distance in screen heights), `recession` (recession rate)
-- **Appearance**: `blur_spread`, `max_dim`, `dim_floor`, `dim_reach`, `dim_curve`
-- **Shader**: `"recede"` (default, content shrinks backward) or `"duo"` (Windows original, content pushed off top)
+- **Intent recognition**: `threshold_angle`, `span_angle`, `hysteresis`, `closing_speed`, `opening_speed`
+- **Geometry**: `eye_dist_h` (viewing distance in screen heights)
+- **Appearance**: `blur_spread`, `darkening`
+- **Performance**: `refresh_hz`, `poll_hz`, `smoothing`
 
-## Project structure
+## Project Structure
 
 ```
 mac/
-├── glass_overlay_mac.py    # Main application
-├── lid_sensor.py            # IOKit HID lid angle reader
-├── capture.py               # CGWindowListCreateImage with self-exclusion
-├── shaders.py               # Core profile shader implementations
-├── gl_core.py               # VAO/VBO/texture utilities
+├── glass_overlay_mac.py     # Main application
+├── lid_sensor.py            # HID sensor reader
 ├── lid_policy.py            # Intent recognition state machine
-├── depth_geometry.py        # Recession projection math
-├── config.json              # Tunable parameters
-├── test_lid_policy.py       # Policy unit tests
-├── offscreen_test.py        # Shader validation (offline)
-└── recede_test.py           # Quantitative spatial effect verification
+├── capture.py               # CGWindowListCreateImage wrapper
+├── shaders.py               # OpenGL Core 3.3 shaders (WindowsDuo projection)
+├── gl_core.py               # VAO/VBO/texture utilities
+├── offscreen_test.py        # Offline shader validation
+├── test_lid_policy.py       # Intent recognition unit tests
+├── config.json              # Effect parameters (aligned with Windows version)
+└── README.md                # This file
 ```
 
 ## Testing
 
 ```bash
-# Intent recognition (15 tests)
+# Intent recognition tests
 python mac/test_lid_policy.py
 
-# Shader output validation
+# Shader validation (offscreen rendering)
 python mac/offscreen_test.py
-
-# Spatial properties (shrink, blur gradient, fade-to-dark)
-python mac/recede_test.py
-python mac/recede_test.py --compare  # Compare recede vs duo shaders
 ```
 
-## License and attribution
+## Technical Notes
 
-This macOS port is released under the same MIT license as WindowsDuo.
+### Sensor Protocol
 
-The geometry model and intent recognition logic reference [Mac-Duo](https://github.com/sumimakito/Mac-Duo) (Apache-2.0, commit 4568442) for protocol facts and parameters. No Mac-Duo code was copied; all implementation is original Python/GLSL.
+MacBook lid angle sensor: HID 0x05AC (Apple) / usage page 0x00FF (vendor-specific) / usage 0x0020. Reports raw angle in 0.01° units via IOHIDDeviceGetValue. No special permissions required.
 
-## Technical notes
+### Effect Parameters
 
-- **Self-capture prevention**: `kCGWindowListOptionOnScreenBelowWindow` excludes the overlay from its own screenshots (macOS 10.13+)
-- **Lid sensor**: Direct IOKit HID read, no polling — sensor reports at 27Hz when lid moves
-- **Shader math**: Same perspective+blur logic as Windows version, rewritten for explicit VAO/VBO/attributes
-- **Default parameters**: `eye_dist_h=6.0` (Mac-Duo's default) reduces out-of-bounds black area at extreme angles vs Windows' `2.0`
+Fully aligned with WindowsDuo original:
+- `eye_dist_h=2.0` (Windows default, eye distance in screen heights)
+- `darkening=0.001` (Windows default, subtle darkening)
+- `refresh_hz=3` (Windows default, frame rate)
+- `blur_spread=0.42` (blur spread coefficient)
+- `max_tilt_deg=88.0` (maximum tilt angle)
+
+### Self-Exclusion
+
+Uses `kCGWindowListOptionOnScreenBelowWindow` with the overlay's own CGWindowID to capture only content below the overlay, preventing feedback loops.
 
 ## Troubleshooting
 
-**Screen shows only desktop wallpaper**: Grant Screen Recording permission in System Settings → Privacy & Security → Screen Recording, then restart the app.
+**Effect not showing**: Check screen recording permission in System Settings.
 
-**Sensor not found**: Your MacBook model may not expose lid angle via HID. Run `--selftest` to confirm.
+**Sensor not available**: Your MacBook model may not have the built-in sensor. Use `--manual` mode for keyboard control.
 
-**Effect too subtle/strong**: Adjust `recession`, `blur_spread`, `max_dim` in `config.json`.
+**Effect too subtle/strong**: Adjust `blur_spread` or `eye_dist_h` in `config.json`.
 
-**Effect triggers too easily**: Increase `hysteresis`, raise `dwell_duration`, or adjust `threshold_angle` in `config.json`.
+## License
+
+MIT (same as WindowsDuo)
+
+## Credits
+
+- WindowsDuo original by KaedeharaKazuha1029
+- macOS port sensor protocol reference: Mac-Duo by sumimakito (Apache-2.0)
+- Intent recognition logic adapted from Mac-Duo's state machine

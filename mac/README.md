@@ -8,7 +8,7 @@ This is a **software-only** port that uses your MacBook's built-in lid angle sen
 
 ## Key Features
 
-- **Native lid sensor**: MacBook's built-in HID sensor (0.01° precision, ~27Hz)
+- **Native lid sensor**: MacBook's built-in HID sensor (report 7 supports 0.01° resolution)
 - **Intent recognition**: State machine prevents false triggers when lid is stationary
 - **OpenGL Core profile**: Rewritten shaders compatible with macOS (4.1 via Metal backend)
 - **Self-exclusion**: Uses `kCGWindowListOptionOnScreenBelowWindow` to prevent overlay feedback
@@ -20,7 +20,7 @@ This is a **software-only** port that uses your MacBook's built-in lid angle sen
 # Install dependencies
 python3 -m venv .venv-mac
 source .venv-mac/bin/activate
-pip install PyQt6 PyOpenGL numpy pyobjc-framework-Cocoa pyobjc-framework-Quartz
+pip install PyQt6 PyOpenGL numpy Pillow pyobjc-framework-Cocoa pyobjc-framework-Quartz
 
 # Grant screen recording permission
 # System Settings → Privacy & Security → Screen Recording → Add Terminal/Python
@@ -90,7 +90,7 @@ python mac/offscreen_test.py
 
 ### Sensor Protocol
 
-MacBook lid angle sensor: HID 0x05AC (Apple) / usage page 0x00FF (vendor-specific) / usage 0x0020. Reports raw angle in 0.01° units via IOHIDDeviceGetValue. No special permissions required.
+MacBook lid angle sensor: HID 0x05AC (Apple) / usage page 0x20 / usage 0x8A. The implementation reads feature reports through `IOHIDDeviceGetReport`: report 7 provides 0.01° resolution, with report 1 as a 1° fallback for compatible models. No special permissions are required.
 
 ### Effect Parameters
 

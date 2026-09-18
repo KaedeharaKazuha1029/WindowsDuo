@@ -142,6 +142,7 @@ class LidEffectPolicy:
                 self.active = True
                 self._activated_t = now
                 self._lowest = angle
+                self._above_since = now if angle >= self.threshold else None
 
         return (self.strength(angle) if self.active else 0.0), self.active
 

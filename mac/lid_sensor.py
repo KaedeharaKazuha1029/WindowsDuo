@@ -128,7 +128,7 @@ class LidAngleSensor:
     def _is_builtin(self, dev):
         try:
             obj = objc.objc_object(c_void_p=dev)
-            val = obj.propertyForKey_("BuiltIn")
+            val = obj.propertyForKey_("Built-In")
             return bool(val) if val is not None else False
         except Exception:
             return False

@@ -11,10 +11,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lid_policy import MINIMUM_RELEASE_RISE, LidEffectPolicy
 
 
-def feed(policy, samples, dt=0.05, t0=1000.0):
+def feed(policy, samples, dt=0.05, t0=None):
     """按固定步长喂一串角度, 返回每步的 (strength, active)。"""
     out = []
-    t = t0
+    if t0 is None:
+        t = 1000.0 if policy._last_t is None else policy._last_t + dt
+    else:
+        t = t0
     for a in samples:
         out.append(policy.update(a, now=t))
         t += dt
@@ -94,6 +97,7 @@ def test_closing_intent_expires():
 
     # 停在 95° 等 1s: 超过 dwell 会释放, 也超过 0.5s 的意图记忆
     out = feed(p, [95.0] * 20)
+    assert out[0][1] is True, "dwell 计时应从激活时刻开始"
     assert out[-1][1] is False, "在 threshold 之上停住应当释放"
 
     # 现在慢慢降到 threshold 以下 (慢于 closing_speed, 且旧意图已过期) -> 不该起效
@@ -114,16 +118,22 @@ def test_opening_back_above_threshold_releases():
 
 def test_dwell_above_threshold_releases_even_when_slow():
     """缓慢开回 threshold 之上并停住, 靠 dwell 释放。"""
-    p = new_policy(dwell_duration=0.2)
+    p = new_policy(dwell_duration=0.2, opening_speed=1000.0)
     feed(p, ramp(120.0, 60.0, 20))
     assert p.active
-    out = feed(p, [95.0] * 20)              # 停在阈值之上
+    out = feed(p, [91.0] * 20)              # 停在阈值之上且未越过 hysteresis
+    assert out[0][1] is True
     assert out[-1][1] is False
 
 
 def test_hysteresis_prevents_flapping_at_threshold():
     """激活后在 threshold 上方一点点抖动, 不应立刻释放 (需超过 hysteresis)。"""
-    p = new_policy(hysteresis=4.0, dwell_duration=10.0, min_duration=0.0)
+    p = new_policy(
+        hysteresis=4.0,
+        dwell_duration=10.0,
+        min_duration=0.0,
+        opening_speed=10000.0,
+    )
     feed(p, ramp(120.0, 60.0, 20))
     assert p.active
     # 抬到 91°, 低于 90+4, dwell 也远未到 -> 保持激活

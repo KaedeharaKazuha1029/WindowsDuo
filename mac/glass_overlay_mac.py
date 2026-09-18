@@ -232,13 +232,7 @@ class GlassGLWidget(QOpenGLWidget):
         fmt = self.context().format()
         print(f"[GL] {GL.glGetString(GL.GL_VERSION).decode()} | "
               f"profile={fmt.profile().name} {fmt.majorVersion()}.{fmt.minorVersion()}")
-        try:
-            self.prog = gl_core.compile_program(self.shader)
-        except (RuntimeError, ValueError) as e:
-            print(f"[GL] 着色器编译失败: {e}")
-            print("[GL] 退回 duo 模式")
-            self.shader = "duo"
-            self.prog = gl_core.compile_program("duo")
+        self.prog = gl_core.compile_program()
         self.vao, _ = gl_core.make_quad()
         self.cap_tex = gl_core.make_texture()
         self._gl_ready = True

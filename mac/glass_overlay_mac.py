@@ -337,6 +337,7 @@ def run_selftest(manual):
     else:
         print(f"  传感器 : OK    {angle:.2f}°  ({status}, {hz:.0f}Hz)")
     reader.stop()
+    reader.join(timeout=2.0)
 
     # 2. 权限
     if capture.permission_ok():
@@ -358,6 +359,7 @@ def run_selftest(manual):
     else:
         print(f"  截图   : OK    {frame[1]}x{frame[2]} (行宽 {frame[3]}px)")
     worker.stop()
+    worker.join(timeout=2.0)
 
     # 4. GL
     try:
@@ -433,6 +435,7 @@ def main():
         if _a is None:
             print(f"[警告] 开合角传感器不可用 ({status}), 退回键盘手动模式。")
             reader.stop()
+            reader.join(timeout=2.0)
             reader = None
             manual = True
         else:
@@ -500,8 +503,12 @@ def main():
     capturer.kick()
     rc = app.exec()
     capturer.stop()
+    capturer.join(timeout=2.0)
     if reader:
         reader.stop()
+        reader.join(timeout=2.0)
+    kb.quit_flag = True
+    kb.join(timeout=1.0)
     print()
     return rc
 

@@ -14,8 +14,8 @@ MacBook 自带一个上报屏幕开合角的 Apple HID 设备，所以 mac 端**
 协议细节参考 sumimakito/Mac-Duo 的 LidAngleSensor.swift (Apache-2.0);
 此处为 Python/ctypes 独立实现, 未复制其代码。
 
-坑: 外接显示器可能声明同样的 usage 但恒读 0, 所以必须用 BuiltIn 属性筛掉;
-    个别机型 BuiltIn 属性缺失 (返回 None), 此时退化为"能读出合法角度就认"。
+坑: 外接显示器可能声明同样的 usage 但恒读 0, 所以必须用 Built-In 属性筛掉;
+    个别机型 Built-In 属性缺失 (返回 None), 此时退化为"能读出合法角度就认"。
 """
 import ctypes
 import threading
@@ -42,6 +42,7 @@ class LidAngleSensor:
         self._cf = ctypes.cdll.LoadLibrary(_CF)
         self._bind()
         self._buf = (ctypes.c_uint8 * 64)()
+        self._manager = None
         self._device = None
         self._report_id = None
         self._divisor = None
@@ -87,6 +88,7 @@ class LidAngleSensor:
         if not mgr:
             self.last_error = "IOHIDManagerCreate 失败"
             return
+        self._manager = mgr
         match = NSDictionary.dictionaryWithDictionary_(
             {"VendorID": 0x05AC, "DeviceUsagePage": 0x20, "DeviceUsage": 0x8A}
         )
@@ -95,12 +97,14 @@ class LidAngleSensor:
         )
         if self._iokit.IOHIDManagerOpen(mgr, 0) != kIOReturnSuccess:
             self.last_error = "IOHIDManagerOpen 失败"
+            self._cf.CFRelease(mgr)
+            self._manager = None
             return
-        self._manager = mgr
 
         devices = self._iokit.IOHIDManagerCopyDevices(mgr)
         if not devices:
             self.last_error = "没有匹配的 HID 设备 (本机可能没有开合角传感器)"
+            self.close()
             return
         try:
             n = self._cf.CFSetGetCount(devices)
@@ -113,7 +117,7 @@ class LidAngleSensor:
                     builtin.append(dev)
                 else:
                     others.append(dev)
-            # 优先内置设备; BuiltIn 缺失的机型退化到"能读出合法值就认"
+            # 优先内置设备; Built-In 缺失的机型退化到"能读出合法值就认"
             for dev in builtin + others:
                 for rid, min_len, div in _FORMATS:
                     self._device, self._report_id = dev, rid
@@ -124,6 +128,8 @@ class LidAngleSensor:
             self.last_error = "找到设备但没有一个 report 能读出合法角度"
         finally:
             self._cf.CFRelease(devices)
+        if self._device is None:
+            self.close()
 
     def _is_builtin(self, dev):
         try:
@@ -165,7 +171,12 @@ class LidAngleSensor:
         mgr = getattr(self, "_manager", None)
         if mgr:
             self._iokit.IOHIDManagerClose(mgr, 0)
+            self._cf.CFRelease(mgr)
             self._manager = None
+        self._device = None
+        self._report_id = None
+        self._divisor = None
+        self._min_len = None
 
 
 class LidAngleReader(threading.Thread):
@@ -204,6 +215,7 @@ class LidAngleReader(threading.Thread):
         if not self.sensor.available:
             with self.lock:
                 self.status = f"no sensor ({self.sensor.last_error})"
+            self.sensor.close()
             return
         with self.lock:
             self.status = self.sensor.resolution_name

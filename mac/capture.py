@@ -46,9 +46,9 @@ class ScreenGrabber:
     """同步单次截屏, 排除指定窗口 (以及它上面的一切)。"""
 
     def __init__(self, rect=None):
-        # rect should be the target screen's bounds in pixels, not CGRectInfinite
-        # (which captures the entire virtual desktop on multi-display setups)
-        self.rect = rect
+        # 主程序会传入目标屏幕的像素 bounds (多屏时避免截到整个虚拟桌面);
+        # 自检/单测不传时退回整个桌面 —— CGWindowListCreateImage 不接受 None。
+        self.rect = rect if rect is not None else Quartz.CGRectInfinite
         self.exclude_window_id = None
 
     def grab(self):

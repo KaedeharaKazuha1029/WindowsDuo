@@ -46,7 +46,9 @@ class ScreenGrabber:
     """同步单次截屏, 排除指定窗口 (以及它上面的一切)。"""
 
     def __init__(self, rect=None):
-        self.rect = rect if rect is not None else Quartz.CGRectInfinite
+        # rect should be the target screen's bounds in pixels, not CGRectInfinite
+        # (which captures the entire virtual desktop on multi-display setups)
+        self.rect = rect
         self.exclude_window_id = None
 
     def grab(self):
@@ -82,7 +84,7 @@ class CaptureWorker(threading.Thread):
         self.frame = None          # (bgra, w, h, row_px, seq)
         self.busy = False
         self.error = None
-        self._stop = False
+        self._stop_requested = False
 
     def set_exclude_window(self, cg_window_id):
         self.grabber.exclude_window_id = int(cg_window_id) if cg_window_id else None
@@ -96,15 +98,15 @@ class CaptureWorker(threading.Thread):
             self.request.set()
 
     def stop(self):
-        self._stop = True
+        self._stop_requested = True
         self.request.set()
 
     def run(self):
         seq = 0
-        while not self._stop:
+        while not self._stop_requested:
             self.request.wait()
             self.request.clear()
-            if self._stop:
+            if self._stop_requested:
                 break
             self.done.clear()
             self.busy = True

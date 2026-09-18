@@ -184,7 +184,7 @@ class LidAngleReader(threading.Thread):
         self.raw = None
         self.hz = 0.0
         self.status = "starting"
-        self._stop = False
+        self._stop_requested = False
         self.sensor = None
 
     def get(self):
@@ -192,7 +192,7 @@ class LidAngleReader(threading.Thread):
             return self.angle, self.raw, self.hz, self.status
 
     def stop(self):
-        self._stop = True
+        self._stop_requested = True
 
     def run(self):
         try:
@@ -209,7 +209,7 @@ class LidAngleReader(threading.Thread):
             self.status = self.sensor.resolution_name
 
         n, t0, smoothed = 0, time.time(), None
-        while not self._stop:
+        while not self._stop_requested:
             deg = self.sensor.angle()
             if deg is not None:
                 smoothed = deg if smoothed is None else smoothed + (deg - smoothed) * self.ema

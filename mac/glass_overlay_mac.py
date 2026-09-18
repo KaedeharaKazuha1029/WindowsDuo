@@ -467,12 +467,20 @@ def main():
     kb.auto = not manual
     kb.start()
 
-    capturer = capture.CaptureWorker()
+    # Pass screen bounds to capturer so multi-display setups don't capture
+    # the entire virtual desktop (CGRectInfinite)
+    geom = screen.geometry()
+    dpr = screen.devicePixelRatio()
+    rect = Quartz.CGRectMake(
+        geom.x() * dpr, geom.y() * dpr,
+        geom.width() * dpr, geom.height() * dpr
+    )
+    capturer = capture.CaptureWorker(rect=rect)
     capturer.start()
 
     print("=" * 62)
     print("iPhone Duo 悬浮玻璃 · macOS 端")
-    print(f"  铰链=屏幕底边  最大转角 {CFG.get('max_tilt_deg')}°  "
+    print(f"  铰链=屏幕底边  最大转角 {CFG.get('max_sep_deg')}°  "
           f"眼距 {CFG.get('eye_dist_h')}x屏高")
     print(f"  起效角 {CFG.get('threshold_angle')}°  跨度 {CFG.get('span_angle')}°  "
           f"blur_spread={CFG.get('blur_spread')}")

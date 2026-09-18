@@ -11,23 +11,16 @@ import ctypes
 
 from OpenGL import GL
 
-from shaders import FS_DUO_CORE, FS_RECEDE_CORE, QUAD_VERTS, VS_CORE
+from shaders import FS_DUO_CORE, QUAD_VERTS, VS_CORE
 
 
-def compile_program(mode="recede"):
-    """编译着色器, 返回 program id。失败抛 RuntimeError。
-
-    mode="recede" (默认): 内容缩小后退 + 模糊隐去 —— 真机 iPhone Duo 的观感
-    mode="duo"            : win 端原公式 (放大挤出顶边), 保留供对比
-    """
-    fs = {"recede": FS_RECEDE_CORE, "duo": FS_DUO_CORE}.get(mode)
-    if fs is None:
-        raise ValueError(f"未知着色器模式: {mode}")
+def compile_program():
+    """编译 Duo 折叠着色器, 返回 program id。失败抛 RuntimeError。"""
     prog = GL.glCreateProgram()
     shaders = []
     for kind, src, name in (
         (GL.GL_VERTEX_SHADER, VS_CORE, "vertex"),
-        (GL.GL_FRAGMENT_SHADER, fs, "fragment"),
+        (GL.GL_FRAGMENT_SHADER, FS_DUO_CORE, "fragment"),
     ):
         sh = GL.glCreateShader(kind)
         GL.glShaderSource(sh, src)
@@ -91,35 +84,12 @@ def upload_bgra(tex, data, width, height, row_px=None):
 
 
 def set_uniforms(prog, res_w, res_h, tilt, eye_z, spread, dark, max_taps):
-    """FS_DUO_CORE (win 原公式) 的 uniform。"""
     GL.glUniform1i(GL.glGetUniformLocation(prog, "uTex"), 0)
     GL.glUniform2f(GL.glGetUniformLocation(prog, "uRes"), float(res_w), float(res_h))
     GL.glUniform1f(GL.glGetUniformLocation(prog, "uTilt"), float(tilt))
     GL.glUniform1f(GL.glGetUniformLocation(prog, "uEyeZ"), float(eye_z))
     GL.glUniform1f(GL.glGetUniformLocation(prog, "uSpread"), float(spread))
     GL.glUniform1f(GL.glGetUniformLocation(prog, "uDark"), float(dark))
-    GL.glUniform1i(GL.glGetUniformLocation(prog, "uMaxTaps"), int(max_taps))
-
-
-def set_recede_uniforms(prog, res_w, res_h, sep, along, depth, spread,
-                        progress, max_dim, dim_floor, dim_reach, dim_curve,
-                        max_taps):
-    """FS_RECEDE_CORE (向后退去) 的 uniform。
-
-    sep/along/depth 由 depth_geometry.separation_params() 算出;
-    progress = 合盖进度 0..1, 驱动渐暗 (模糊仍由几何后退深度驱动)。
-    """
-    GL.glUniform1i(GL.glGetUniformLocation(prog, "uTex"), 0)
-    GL.glUniform2f(GL.glGetUniformLocation(prog, "uRes"), float(res_w), float(res_h))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uSep"), float(sep))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uAlong"), float(along))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uDepth"), float(depth))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uSpread"), float(spread))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uProgress"), float(progress))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uMaxDim"), float(max_dim))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uDimFloor"), float(dim_floor))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uDimReach"), float(dim_reach))
-    GL.glUniform1f(GL.glGetUniformLocation(prog, "uDimCurve"), float(dim_curve))
     GL.glUniform1i(GL.glGetUniformLocation(prog, "uMaxTaps"), int(max_taps))
 
 

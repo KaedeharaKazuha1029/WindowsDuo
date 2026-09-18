@@ -271,24 +271,12 @@ class GlassGLWidget(QOpenGLWidget):
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.cap_tex)
 
-        if self.shader == "recede":
-            from depth_geometry import angle_from_strength, separation_params
-            angle = angle_from_strength(
-                self.g, float(CFG["threshold_angle"]), float(CFG["span_angle"]))
-            sep, along, depth = separation_params(
-                float(CFG["threshold_angle"]), angle, self.eye_h,
-                self.recession, self.max_sep_deg, frame[2])
-            progress = max(0.0, min(1.0, self.g))
-            gl_core.set_recede_uniforms(
-                self.prog, frame[1], frame[2], sep, along, depth, self.spread,
-                progress, self.max_dim, self.dim_floor, self.dim_reach,
-                self.dim_curve, self.max_taps)
-        else:
-            gl_core.set_uniforms(
-                self.prog, frame[1], frame[2],
-                tilt=self.g * 88.0 * DEG2RAD,
-                eye_z=self.eye_h * frame[2],
-                spread=self.spread, dark=0.001, max_taps=self.max_taps)
+        gl_core.set_uniforms(
+            self.prog, frame[1], frame[2],
+            tilt=self.g * self.max_tilt,
+            eye_z=self.eye_h * frame[2],
+            spread=self.spread, dark=self.dark, max_taps=self.max_taps,
+        )
         gl_core.draw_quad(self.vao)
 
     # ---------- 主循环 ----------

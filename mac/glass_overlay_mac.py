@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import Quartz
 from OpenGL import GL
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QSurfaceFormat

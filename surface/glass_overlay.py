@@ -13,21 +13,21 @@ iPhone Duo「悬浮玻璃」· Windows 端 v3 (复刻着色器版)
 靠近铰链处始终清晰, 远离铰链处(屏幕上部)先模糊、先消失。
 
 线程:
-  - AngleReader   : 串口 100Hz 读 {"a":..,"b":..}   (--manual 可脱离串口)
+    - GyroAngleReader: Windows 内置陀螺仪积分开合角     (--manual 可脱离传感器)
   - CaptureWorker : mss 截屏原始帧
   - GL 主线程     : 上传纹理(带 mipmap) → 单 pass Duo 折叠着色器
 用法:
-  run_overlay.bat   串口驱动 | run_manual.bat   键盘手动 (↑↓←→)
+    run_overlay.bat   陀螺仪驱动 | run_manual.bat   键盘手动 (↑↓←→)
   --selftest 无窗口自检 | --smoke 4s 全屏演示自退
 """
 import json
+import math
 import sys
 import threading
 import time
 from pathlib import Path
 
 import mss
-import serial
 from OpenGL import GL
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QSurfaceFormat
@@ -134,57 +134,143 @@ void main() {
 """
 
 
-# ---------------------------------------------------------------- 串口线程
-class AngleReader(threading.Thread):
-    def __init__(self, port, baud):
+# ---------------------------------------------------------------- Windows 陀螺仪线程
+class GyroAngleReader(threading.Thread):
+    """读取 Windows 绝对倾角，并映射为项目的开合角。"""
+
+    def __init__(self, axis="y", sign=1.0, initial_angle=10.0,
+                 angle_min=-90.0, angle_max=10.0, poll_hz=60.0,
+                 cf_gyro=0.98, accel_lp_alpha=0.2, gyro_bias_seconds=1.0,
+                 correction_limit=45.0, inclinometer_axis="pitch",
+                 inclinometer_closed=0.0, inclinometer_open=90.0,
+                 inclinometer_smoothing=0.35):
         super().__init__(daemon=True)
-        self.port, self.baud = port, baud
+        self.axis = axis.lower()
+        self.sign = float(sign)
+        self.initial_angle = float(initial_angle)
+        self.angle_min = float(angle_min)
+        self.angle_max = float(angle_max)
+        self.interval = 1.0 / max(float(poll_hz), 1.0)
+        self.cf_gyro = max(0.0, min(1.0, float(cf_gyro)))
+        self.cf_acc = 1.0 - self.cf_gyro
+        self.accel_lp_alpha = max(0.0, min(1.0, float(accel_lp_alpha)))
+        self.gyro_bias_seconds = max(0.0, float(gyro_bias_seconds))
+        self.correction_limit = max(0.0, float(correction_limit))
+        self.inclinometer_axis = inclinometer_axis.lower()
+        self.inclinometer_closed = float(inclinometer_closed)
+        self.inclinometer_open = float(inclinometer_open)
+        self.inclinometer_smoothing = max(0.0, min(1.0, float(inclinometer_smoothing)))
         self.lock = threading.Lock()
         self.angle = None
         self.other = None
         self.fps = 0.0
-        self.status = "connecting"
-        self._stop = False
+        self.status = "starting"
+        self._stop_requested = False
 
     def get(self):
         with self.lock:
             return self.angle, self.other, self.fps, self.status
 
     def run(self):
-        import re
-        pat = re.compile(r"\{[^}]*\}")
+        try:
+            from winsdk.windows.devices.sensors import Gyrometer, Inclinometer
+            gyro = Gyrometer.get_default()
+            inclinometer = Inclinometer.get_default()
+        except Exception as e:  # noqa: BLE001
+            self._set("sensor init failed: " + str(e))
+            return
+        if self.axis not in ("x", "y"):
+            self._set("unsupported hinge axis: " + self.axis)
+            return
+        if gyro is None:
+            self._set("no Windows gyrometer")
+            return
+        if inclinometer is None:
+            self._set("no Windows inclinometer")
+            return
+        if self.inclinometer_axis not in ("pitch", "roll"):
+            self._set("unsupported inclinometer axis: " + self.inclinometer_axis)
+            return
+
+        try:
+            report_interval = max(1, int(self.interval * 1000))
+            gyro.report_interval = report_interval
+            inclinometer.report_interval = report_interval
+        except Exception:
+            pass
+
+        angle = None
         n, t0 = 0, time.time()
-        while not self._stop:
+        self._set("Windows inclinometer absolute")
+        while not self._stop_requested:
             try:
-                with serial.Serial(self.port, self.baud, timeout=1) as ser:
-                    self._set("connected")
-                    buf = b""
-                    while not self._stop:
-                        buf += ser.readline()
-                        if b"}" not in buf:
-                            buf = buf[-64:] if len(buf) > 256 else buf
-                            continue
-                        line, buf = buf.rsplit(b"}", 1)
-                        line = (line + b"}").decode("ascii", "ignore")
-                        m = pat.search(line)
-                        if not m:
-                            continue
-                        try:
-                            d = json.loads(m.group(0))
-                        except ValueError:
-                            continue
-                        with self.lock:
-                            self.angle = float(d[CFG.get("axis", "a")])
-                            self.other = float(d.get("b", 0.0))
-                        n += 1
-                        now = time.time()
-                        if now - t0 >= 1:
-                            with self.lock:
-                                self.fps = n / (now - t0)
-                            n, t0 = 0, now
-            except (serial.SerialException, OSError):
-                self._set("waiting " + self.port)
-                time.sleep(2)
+                inclinometer_reading = inclinometer.get_current_reading()
+                if inclinometer_reading is not None:
+                    sensor_angle = float(getattr(
+                        inclinometer_reading, self.inclinometer_axis + "_degrees"
+                    ))
+                    absolute_angle = self._map_inclinometer_angle(sensor_angle)
+                    if angle is None:
+                        angle = absolute_angle
+                    else:
+                        angle += self.inclinometer_smoothing * (absolute_angle - angle)
+                    rate = 0.0
+                    if gyro is not None:
+                        gyro_reading = gyro.get_current_reading()
+                        if gyro_reading is not None:
+                            rate = float(getattr(
+                                gyro_reading, "angular_velocity_" + self.axis
+                            ))
+                    with self.lock:
+                        self.angle = angle
+                        self.other = rate
+                    n += 1
+                wall_now = time.time()
+                if wall_now - t0 >= 1.0:
+                    with self.lock:
+                        self.fps = n / (wall_now - t0)
+                    n, t0 = 0, wall_now
+            except Exception as e:  # noqa: BLE001
+                self._set("gyrometer read failed: " + str(e))
+            time.sleep(self.interval)
+
+    def _map_inclinometer_angle(self, sensor_angle):
+        span = self.inclinometer_open - self.inclinometer_closed
+        if abs(span) < 1e-6:
+            return self.angle_max
+        ratio = (sensor_angle - self.inclinometer_closed) / span
+        ratio = max(0.0, min(1.0, ratio))
+        return self.angle_max + ratio * (self.angle_min - self.angle_max)
+
+    def _calibrate_bias(self, sensor):
+        if self.gyro_bias_seconds <= 0:
+            return 0.0
+        deadline = time.perf_counter() + self.gyro_bias_seconds
+        total = 0.0
+        samples = 0
+        while time.perf_counter() < deadline and not self._stop_requested:
+            reading = sensor.get_current_reading()
+            if reading is not None:
+                total += float(getattr(reading, "angular_velocity_" + self.axis))
+                samples += 1
+            time.sleep(self.interval)
+        if self._stop_requested:
+            return None
+        return total / samples if samples else 0.0
+
+    def _read_accel_angle(self, sensor, reading=None):
+        reading = reading or sensor.get_current_reading()
+        if reading is None:
+            return None
+        ax = float(reading.acceleration_x)
+        ay = float(reading.acceleration_y)
+        az = float(reading.acceleration_z)
+        if self.axis == "y":
+            return math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
+        return math.degrees(math.atan2(ay, math.sqrt(ax * ax + az * az)))
+
+    def stop(self):
+        self._stop_requested = True
 
     def _set(self, s):
         with self.lock:
@@ -194,7 +280,7 @@ class AngleReader(threading.Thread):
 # ---------------------------------------------------------------- 键盘控制
 class ManualControl(threading.Thread):
     """键盘控制玻璃浓度: ↑/w +3%  ↓/s -3%  →/d 100%  ←/a 0%  r=角度自动  Esc 退出
-    默认为手动覆盖模式 (target=0 即正常显示); 按 r 切换到跟随 ESP 角度。"""
+    默认为手动覆盖模式 (target=0 即正常显示); 按 r 切换到跟随陀螺仪角度。"""
 
     def __init__(self):
         super().__init__(daemon=True)
@@ -369,7 +455,7 @@ class GlassGLWidget(QOpenGLWidget):
             raw, fw, fh, seq = frame
             GL.glBindTexture(GL.GL_TEXTURE_2D, self.cap_tex)
             GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA, fw, fh, 0,
-                            GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, raw)
+                            GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, bytes(raw))
             GL.glGenerateMipmap(GL.GL_TEXTURE_2D)
             GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
             self._uploaded_seq = seq
@@ -445,7 +531,7 @@ class GlassGLWidget(QOpenGLWidget):
             self._last_print = time.time()
             if self.reader is not None:
                 a = angle if angle is not None else float("nan")
-                print(f"\r[{mode}] a={a:7.2f}° b={(other if other is not None else 0):7.2f}° "
+                print(f"\r[{mode}] angle={a:7.2f}° rate={(other if other is not None else 0):7.2f}°/s "
                       f"浓度={self.g*100:5.1f}%  [{status} {fps:3.0f}Hz] "
                       f"↑↓调节 r=切自动 Esc退出 ", end="", flush=True)
             else:
@@ -462,6 +548,7 @@ def main():
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
     fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    fmt.setOption(QSurfaceFormat.FormatOption.DeprecatedFunctions)
     fmt.setSwapInterval(1)
     QSurfaceFormat.setDefaultFormat(fmt)
 
@@ -478,7 +565,22 @@ def main():
         reader = None
         print("[手动模式] 不连接 ESP")
     else:
-        reader = AngleReader(CFG["port"], int(CFG.get("baud", 115200)))
+        reader = GyroAngleReader(
+            axis=CFG.get("gyro_axis", "y"),
+            sign=CFG.get("gyro_sign", 1.0),
+            initial_angle=CFG.get("gyro_initial_angle", CFG["angle_closed"]),
+            angle_min=CFG["angle_open"],
+            angle_max=CFG["angle_closed"],
+            poll_hz=CFG.get("gyro_poll_hz", 60),
+            cf_gyro=CFG.get("cf_gyro", 0.98),
+            accel_lp_alpha=CFG.get("accel_lp_alpha", 0.2),
+            gyro_bias_seconds=CFG.get("gyro_bias_seconds", 1.0),
+            correction_limit=CFG.get("correction_limit", 45.0),
+            inclinometer_axis=CFG.get("inclinometer_axis", "pitch"),
+            inclinometer_closed=CFG.get("inclinometer_closed", 0.0),
+            inclinometer_open=CFG.get("inclinometer_open", 90.0),
+            inclinometer_smoothing=CFG.get("inclinometer_smoothing", 0.35),
+        )
         reader.start()
     capturer = CaptureWorker(region)
     capturer.start()
@@ -530,7 +632,7 @@ def main():
             try:
                 import mss as _mss
                 from PIL import Image as _Image
-                with _mss.MSS() as sct2:
+                with _mss.mss() as sct2:
                     shot = sct2.grab(region)
                     out2 = str(Path(__file__).with_name("smoke_frame.png"))
                     _Image.frombytes("RGB", shot.size, shot.rgb).save(out2)

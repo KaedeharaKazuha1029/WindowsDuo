@@ -4,16 +4,16 @@
 
 ## 项目是什么
 
-这是面向 Surface Pro 等 Windows 二合一设备的纯 Windows 版本：
+surface文件夹下是面向 Surface Pro 等 Windows 二合一设备的纯 Windows 版本：
 
 - **Windows 侧**（`win/`）：PyQt6 QOpenGLWidget 全屏置顶悬浮层，通过 Windows 内置 Inclinometer 读取绝对姿态，GLSL 着色器实现逆投影 Duo 折叠效果（铰链=屏幕底边，间隙越大越模糊越暗，视线出界纯黑）。
-- 本仓库不包含 macOS 或 ESP32 外部硬件版本。
-- 需要 ESP32 + MPU6050 方案，请访问原始仓库：<https://github.com/KaedeharaKazuha1029/WindowsDuo>
+- 本分支不包含 macOS 或 ESP32 外部硬件版本。
+- 需要 ESP32 + MPU6050 方案，请访问原始win分支
 
 ## 目录结构
 
 ```
-win/
+surface/
   glass_overlay.py        主程序: Inclinometer reader + CaptureWorker + GlassGLWidget
   config.json             全部运行参数 (姿态映射/模糊/变暗等)
   offscreen_test.py       离屏渲染验证着色器(不出窗口, 出 PNG)

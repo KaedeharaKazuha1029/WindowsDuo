@@ -36,6 +36,7 @@ def main():
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
     fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    fmt.setOption(QSurfaceFormat.FormatOption.DeprecatedFunctions)
     QSurfaceFormat.setDefaultFormat(fmt)
     app = QApplication(sys.argv)
 

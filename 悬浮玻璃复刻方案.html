@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>复刻 iPhone Duo「悬浮玻璃」开合效果 · 可行方案</title>
+<title>Surface Pro 无硬件复刻 iPhone Duo「悬浮玻璃」</title>
 <style>
   :root{
     --bg:#f7f7f9; --card:#ffffff; --ink:#1c1c22; --sub:#5c5c66;
@@ -48,19 +48,20 @@
 <body>
 <div class="wrap">
 
-<h1>复刻 iPhone Duo「悬浮玻璃」开合效果</h1>
-<div class="meta">Windows 笔记本 + ESP32/ESP8266 + MPU6050 · 可行性方案 · 2026-09-12</div>
+<h1>Surface Pro 无硬件复刻 iPhone Duo「悬浮玻璃」</h1>
+<div class="meta">Windows 二合一设备 + 内置姿态传感器 + PyQt6/OpenGL · 实现说明 · 2026-09-21</div>
 
-<span class="tag">硬件：ESP32（主）/ ESP8266（备）</span>
-<span class="tag">传感器：MPU6050</span>
-<span class="tag">Windows 11</span>
+<span class="tag">Surface Pro / Windows 二合一</span>
+<span class="tag">无需 ESP32</span>
+<span class="tag">无需 MPU6050</span>
+<span class="tag">Windows Inclinometer</span>
 <span class="tag">Python + PyQt6</span>
 
 <h2>0. 结论先行</h2>
 <div class="ok">
-<b>可行，且成本约等于零。</b>你没有开合角度传感器也没关系——MPU6050 的加速度计贴在笔记本屏幕背盖上，
-通过重力向量即可连续解算开合角度（0°~140°），再经 USB 串口把角度实时传给 Windows 端的一个全屏"玻璃层"程序，
-模糊半径与透明度随角度连续变化，就能复现 iPhone Duo 那套"由实入虚、由虚变实"的悬浮玻璃过渡动画。
+<b>Surface Pro 不需要外接硬件。</b>Windows Sensor Platform 的 Inclinometer 会直接提供设备当前的绝对姿态，
+程序将其映射为开合角，再驱动全屏 OpenGL 玻璃层。默认约定为：合上 <code>-90°</code>，打开 <code>0°</code>。
+需要 ESP32 + MPU6050 外部传感器方案，请访问原始仓库：<a href="https://github.com/KaedeharaKazuha1029/WindowsDuo">KaedeharaKazuha1029/WindowsDuo</a>。
 </div>
 
 <h2>1. 要复刻的效果到底是什么</h2>
@@ -73,10 +74,10 @@
 <li><b>虚实渐变</b>：旧内容渐隐入玻璃、新内容由虚到实渐现，方向与开合方向一致。</li>
 </ul>
 </div>
-<p>在笔记本（单屏）上，这套效果的合理映射是：</p>
+<p>在 Surface Pro 这类 Windows 二合一设备上，这套效果的映射是：</p>
 <div class="card">
-<b>合盖过程中</b>：屏幕内容逐渐被磨砂玻璃覆盖（blur↑ + 亮度/透明度↓），像内容正在"沉入玻璃"；
-<b>开盖过程中</b>：玻璃层逐渐消散，内容由虚到实恢复清晰。角度即"玻璃浓度"的唯一驱动源。
+<b>合盖过程中</b>：角度从 <code>0°</code> 向 <code>-90°</code> 变化，玻璃浓度增加；
+<b>打开过程中</b>：角度从 <code>-90°</code> 回到 <code>0°</code>，画面恢复清晰。角度来自绝对姿态，不是启动后的累计变化量。
 </div>
 
 <h2>2. 系统架构</h2>
@@ -91,29 +92,29 @@
   <rect x="20" y="60" width="190" height="120" rx="12" fill="#f4f4f8" stroke="#d5d5de"/>
   <rect x="35" y="45" width="160" height="95" rx="8" fill="#ffffff" stroke="#d5d5de"/>
   <rect x="35" y="45" width="160" height="95" rx="8" fill="#ffffff" opacity="0"/>
-  <text x="115" y="88" text-anchor="middle" fill="#1c1c22" font-weight="600">笔记本屏幕</text>
-  <text x="115" y="110" text-anchor="middle" fill="#5c5c66" font-size="12">背盖贴 MPU6050</text>
-  <text x="115" y="200" text-anchor="middle" fill="#5c5c66" font-size="12">转轴角度 θ：0°(合) ~ 140°(全开)</text>
+  <text x="115" y="88" text-anchor="middle" fill="#1c1c22" font-weight="600">Surface Pro 屏幕</text>
+  <text x="115" y="110" text-anchor="middle" fill="#5c5c66" font-size="12">内置姿态传感器</text>
+  <text x="115" y="200" text-anchor="middle" fill="#5c5c66" font-size="12">角度：-90°(合) ~ 0°(开)</text>
   <!-- mpu -->
   <rect x="60" y="30" width="110" height="26" rx="6" fill="#5e5ce6"/>
-  <text x="115" y="47" text-anchor="middle" fill="#fff" font-size="12" font-weight="600">MPU6050</text>
+  <text x="115" y="47" text-anchor="middle" fill="#fff" font-size="12" font-weight="600">Inclinometer</text>
   <line x1="115" y1="56" x2="115" y2="66" stroke="#5e5ce6" stroke-width="2" marker-end="url(#arr)"/>
   <!-- esp -->
   <rect x="260" y="70" width="150" height="100" rx="12" fill="#0a84ff"/>
-  <text x="335" y="110" text-anchor="middle" fill="#fff" font-weight="600" font-size="15">ESP32</text>
-  <text x="335" y="132" text-anchor="middle" fill="#dceaff" font-size="12">I²C 读取 + 互补滤波</text>
-  <text x="335" y="150" text-anchor="middle" fill="#dceaff" font-size="12">100Hz · USB 串口</text>
+  <text x="335" y="110" text-anchor="middle" fill="#fff" font-weight="600" font-size="15">Windows Sensor Platform</text>
+  <text x="335" y="132" text-anchor="middle" fill="#dceaff" font-size="12">绝对 pitch / roll</text>
+  <text x="335" y="150" text-anchor="middle" fill="#dceaff" font-size="12">无需外接硬件</text>
   <line x1="212" y1="92" x2="258" y2="108" stroke="#0a84ff" stroke-width="2" marker-end="url(#arr)"/>
-  <text x="235" y="82" text-anchor="middle" fill="#5c5c66" font-size="11">I²C</text>
+  <text x="235" y="82" text-anchor="middle" fill="#5c5c66" font-size="11">系统 API</text>
   <!-- arrow serial -->
   <line x1="412" y1="120" x2="470" y2="120" stroke="#0a84ff" stroke-width="2" marker-end="url(#arr)"/>
-  <text x="441" y="108" text-anchor="middle" fill="#5c5c66" font-size="11">115200</text>
-  <text x="441" y="140" text-anchor="middle" fill="#5c5c66" font-size="11">{"a":87.5}</text>
+  <text x="441" y="108" text-anchor="middle" fill="#5c5c66" font-size="11">绝对角度</text>
+  <text x="441" y="140" text-anchor="middle" fill="#5c5c66" font-size="11">-90° ~ 0°</text>
   <!-- pc -->
   <rect x="472" y="60" width="360" height="120" rx="12" fill="#ffffff" stroke="#d5d5de"/>
   <text x="652" y="86" text-anchor="middle" fill="#1c1c22" font-weight="600">Windows 端程序 (Python)</text>
   <rect x="492" y="98" width="150" height="30" rx="6" fill="#eef2ff"/>
-  <text x="567" y="117" text-anchor="middle" fill="#5e5ce6" font-size="12">串口读取 + 角度平滑</text>
+  <text x="567" y="117" text-anchor="middle" fill="#5e5ce6" font-size="12">姿态读取 + 两点映射</text>
   <rect x="492" y="136" width="150" height="30" rx="6" fill="#eef2ff"/>
   <text x="567" y="155" text-anchor="middle" fill="#5e5ce6" font-size="12">缓动插值 → 玻璃参数</text>
   <rect x="662" y="98" width="150" height="68" rx="6" fill="#fff7ed"/>
@@ -121,110 +122,65 @@
   <text x="737" y="142" text-anchor="middle" fill="#b45309" font-size="12">blur = f(θ) · 透明度 = g(θ)</text>
   <line x1="644" y1="113" x2="660" y2="113" stroke="#0a84ff" stroke-width="2" marker-end="url(#arr)"/>
   <line x1="644" y1="151" x2="660" y2="145" stroke="#0a84ff" stroke-width="2" marker-end="url(#arr)"/>
-  <text x="652" y="205" text-anchor="middle" fill="#5c5c66" font-size="12">USB 线同时为 ESP32 供电，走转轴缝隙，日常可一直插着</text>
+  <text x="652" y="205" text-anchor="middle" fill="#5c5c66" font-size="12">无需 USB 传感器、串口或转轴走线</text>
 </svg>
 </div>
 
-<h2>3. 角度测量：MPU6050 方案细节</h2>
+<h2>3. 角度测量：Surface Pro 内置传感器</h2>
 <h3>3.1 原理</h3>
-<p>把 MPU6050 固定在<b>屏幕背盖上盖内侧</b>（随盖一起转动）。静止/缓慢开合时，加速度计测得的
-重力方向在传感器坐标系中的 pitch 分量就是盖子倾角，天然覆盖笔记本 0°~140° 的开合范围。</p>
+<p>Windows Sensor Platform 的 <code>Inclinometer</code> 直接提供设备相对于重力方向的绝对姿态。
+程序读取 <code>pitch</code>（必要时可改用 <code>roll</code>），不依赖启动时的零点，也不把陀螺仪积分变化量当成开合角。</p>
 <pre><code>// 互补滤波（推荐，无需卡尔曼）
-pitch_acc = atan2(ax, sqrt(ay*ay + az*az)) * 57.29578;  // 加速度计：绝对角度，长期稳定
-pitch     = 0.98 * (pitch + gz * dt) + 0.02 * pitch_acc; // 陀螺仪：跟手、短期平滑</code></pre>
+sensor_pitch = inclinometer.get_current_reading().pitch_degrees;
+angle = map(sensor_pitch, inclinometer_closed, inclinometer_open,
+            angle_closed, angle_open);                 // 绝对两点映射
+angle = ema(angle, angle_target, inclinometer_smoothing);</code></pre>
 <ul>
-<li>只做开合角度检测，<b>加速度计分量就足够</b>，陀螺仪仅用于抑制抖动；</li>
-<li>MPU6050 模块自重仅 ~3g，3M 双面胶即可固定，不影响使用；</li>
-<li>量程设定：加速度 ±2g、陀螺 ±250°/s 即可。</li>
+<li>不需要 ESP32、MPU6050、USB 线或串口；</li>
+<li>Inclinometer 输出的是绝对姿态，避免纯陀螺仪积分漂移；</li>
+<li>陀螺仪只显示实时角速度，便于诊断，不参与绝对角度累计。</li>
 </ul>
 
 <h3>3.2 两点校准</h3>
 <table>
 <tr><th>姿态</th><th>操作</th><th>写入参数</th></tr>
-<tr><td>完全合盖</td><td>合上盖子，固件记录 pitch 并存入 NVS</td><td>θ=0° 基准</td></tr>
-<tr><td>全开（贴到最大开角）</td><td>掰到底，记录 pitch</td><td>θ=θmax（一般 130°~145°）</td></tr>
+<tr><td>完全合盖</td><td>读取 Inclinometer 的 pitch 并写入 <code>inclinometer_closed</code></td><td>项目角度 = -90°</td></tr>
+<tr><td>完全打开</td><td>读取 pitch 并写入 <code>inclinometer_open</code></td><td>项目角度 = 0°</td></tr>
 </table>
-<p>运行时角度 = <code>(pitch − θ0) / (θmax − θ0) × 140°</code>，线性映射，误差可控制在 ±1° 内。</p>
+<p>当前默认约定为 <code>pitch=90° → -90°</code>（合上），<code>pitch=0° → 0°</code>（打开）。不同机型应实测两个端点后修改配置。</p>
 
-<h3>3.3 ESP32 vs ESP8266 怎么选</h3>
-<table>
-<tr><th></th><th>ESP32（推荐）</th><th>ESP8266</th></tr>
-<tr><td>传输方式</td><td>USB 串口（原生），延迟 &lt;5ms</td><td>串口（CH340）或 WiFi UDP（~15ms）</td></tr>
-<tr><td>供电</td><td>USB 直连笔记本，即插即用</td><td>同左，但部分板卡 5V 兼容性需确认</td></tr>
-<tr><td>注意点</td><td>几乎无坑</td><td>UDP 断线重连、WiFi 功耗、丢包抖动需处理</td></tr>
-<tr><td>结论</td><td><b>首选</b></td><td>作为备用/无线演示方案保留</td></tr>
-</table>
+<h3>3.3 没有可用内置传感器时</h3>
+<div class="note">Surface Pro 版本不需要 ESP32、ESP8266、MPU6050 或串口。本仓库只维护 Windows 内置姿态传感器版本；需要外部传感器方案，请访问 <a href="https://github.com/KaedeharaKazuha1029/WindowsDuo">原始仓库</a>。</div>
 
-<h2>4. 固件（ESP32 · Arduino）</h2>
-<pre><code>#include &lt;Wire.h&gt;
-const int MPU = 0x68;
-float pitch = 0, gPitch = 0;      // 滤波后角度 / 加速度计角度
-unsigned long tPrev = 0;
-
-void setup() {
-  Serial.begin(115200);
-  Wire.begin();                    // SDA=21 SCL=21? → SDA=21, SCL=22
-  Wire.beginTransmission(MPU);
-  Wire.write(0x6B); Wire.write(0); // 唤醒
-  Wire.endTransmission(true);
-}
-
-void loop() {
-  unsigned long now = micros();
-  float dt = (now - tPrev) / 1e6;  tPrev = now;
-  if (dt &lt;= 0 || dt &gt; 0.5) return;
-
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3B); Wire.endTransmission(false);
-  Wire.requestFrom(MPU, 6, true);
-  int16_t ax = Wire.read()&lt;&lt;8 | Wire.read();
-  int16_t ay = Wire.read()&lt;&lt;8 | Wire.read();
-  int16_t az = Wire.read()&lt;&lt;8 | Wire.read();
-  float fax = ax/16384.0, fay = ay/16384.0, faz = az/16384.0;
-
-  gPitch = atan2(fax, sqrt(fay*fay + faz*faz)) * 57.29578;
-  pitch  = 0.98 * (pitch + 0 * dt) + 0.02 * gPitch;   // 简化版：慢速开合以加速度计为主
-
-  static unsigned long tOut = 0;
-  if (millis() - tOut &gt;= 10) {        // 100Hz 输出
-    tOut = millis();
-    Serial.printf("{\"a\":%.1f}\n", pitch);
-  }
-}</code></pre>
-<div class="note">上例为最小可跑骨架（慢速开合场景）。正式版建议加上陀螺仪项与 5 点滑动中值滤波，
-并支持串口命令 <code>CAL0</code> / <code>CAL1</code> 触发两点校准写入 NVS。</div>
-
-<h2>5. Windows 端实现（关键）</h2>
-<h3>5.1 系统级 Acrylic 的局限，先说清楚</h3>
+<h2>4. Windows 端实现（关键）</h2>
+<h3>4.1 系统级 Acrylic 的局限，先说清楚</h3>
 <div class="note">
 Windows 的 <code>SetWindowCompositionAttribute(ACCENT_ENABLE_ACRYLICBLURBEHIND)</code> 能给窗口加系统毛玻璃，
 但<b>模糊半径是系统固定的，不可调</b>——只能调 tint 颜色的透明度。所以"blur 随角度变化"必须自己渲染。
 系统 Acrylic 只适合做兜底/省电模式。
 </div>
 
-<h3>5.2 推荐方案：截图 + 模糊金字塔 Overlay（效果最接近 Duo）</h3>
+<h3>4.2 推荐方案：截图 + GLSL Overlay（效果最接近 Duo）</h3>
 <div class="step"><div class="n">1</div><div>
-<b>截屏一次</b>：pywin32 / mss 抓取当前桌面 → 存为纹理。
+<b>截屏一次</b>：mss 抓取当前桌面 → 上传为 OpenGL 纹理。
 </div></div>
 <div class="step"><div class="n">2</div><div>
-<b>预生成模糊金字塔</b>：启动时（及桌面变化时低频刷新）对截图做 5 级高斯模糊（radius = 4/8/16/32/64），
-得到一组"由实到虚"的贴图。模糊是离线做的，运行时零 GPU 压力。
+<b>生成 mip 纹理</b>：OpenGL 为桌面纹理生成 mipmap，着色器按空间间隙选择采样 LOD，并进行 Vogel 盘采样。
 </div></div>
 <div class="step"><div class="n">3</div><div>
 <b>全屏无边框窗口</b>：PyQt6，<code>FramelessWindowHint + WindowStaysOnTopHint</code>，
-按角度θ插值：<code>radius = map(θ, 140°→0°, 0→64px)</code>，在相邻两级贴图间 alpha 混合，
-再叠加一层随θ增大的半透明暗色/雾白蒙版 → "由实入虚"。60fps 无压力。
+按绝对角度 θ 计算玻璃平面与界面的逆投影，再叠加空间模糊和变暗 → "由实入虚"。
 </div></div>
 <div class="step"><div class="n">4</div><div>
-<b>角度平滑与缓动</b>：串口角度先过 One-Euro/EMA 滤波，再进弹簧缓动（目标值插值）。
-即使传感器只有 50Hz，视觉上依然跟手——这一步是"丝滑感"的一半。
+<b>角度平滑与缓动</b>：Inclinometer 绝对角度先过 EMA 平滑，再进玻璃参数的缓动（目标值插值）。
+这样不会把启动后的累计变化量误当成开合角。
 </div></div>
 <div class="step"><div class="n">5</div><div>
 <b>联动彩蛋</b>：θ &lt; 15° 时调用锁屏（<code>LockWorkStation()</code>）或触发屏保，
 复刻"合盖即休眠"且不与系统电源行为打架。
 </div></div>
 
-<h3>5.3 兜底方案（省事版）</h3>
+<h3>4.3 兜底方案（省事版）</h3>
 <table>
 <tr><th>方案</th><th>做法</th><th>效果</th></tr>
 <tr><td>B. 系统 Acrylic 遮罩</td><td>全屏透明窗 + ACCENT_ACRYLIC，只调 tint alpha</td><td>有玻璃感但模糊深度不可变，打折</td></tr>
@@ -232,17 +188,16 @@ Windows 的 <code>SetWindowCompositionAttribute(ACCENT_ENABLE_ACRYLICBLURBEHIND)
 </table>
 <p>建议直接做 A，B 作为降级开关（笔记本低电量/游戏时）。</p>
 
-<h2>6. 延迟与性能预算</h2>
+<h2>5. 延迟与性能预算</h2>
 <table>
 <tr><th>环节</th><th>耗时</th></tr>
-<tr><td>MPU6050 采样 + 滤波</td><td>~5ms</td></tr>
-<tr><td>USB 串口传输</td><td>&lt;5ms</td></tr>
-<tr><td>角度平滑（EMA/One-Euro）</td><td>~20ms（可调）</td></tr>
+<tr><td>Windows Sensor Platform 读取</td><td>通常为毫秒级</td></tr>
+<tr><td>绝对角度映射 + EMA</td><td>可调</td></tr>
 <tr><td>Overlay 渲染一帧</td><td>≤16ms</td></tr>
 <tr><td><b>合计</b></td><td><b>≈45ms</b> —— 手开合动作本身耗时 300ms+，体感为"实时跟随"</td></tr>
 </table>
 
-<h2>7. 必须处理的坑</h2>
+<h2>6. 必须处理的坑</h2>
 <div class="card">
 <ul>
 <li><b>系统"合盖=睡眠"</b>：演示时把电源计划里"合上盖时"改为"不采取操作"：
@@ -251,36 +206,34 @@ Windows 的 <code>SetWindowCompositionAttribute(ACCENT_ENABLE_ACRYLICBLURBEHIND)
     或仅在 θ 进入过渡区间时刷新；否则模糊层背后是旧画面，会穿帮。</li>
 <li><b>穿帮窗（自己程序的窗口）</b>：Overlay 置顶后，模糊层应排除自身窗口；
     蒙版用桌面合成结果而非分层截图。</li>
-<li><b>走线</b>：USB 线从转轴缝隙引出，用理线贴固定；MPU6050 焊线建议热熔胶补强。</li>
-<li><b>磁场/温度</b>：MPU6050 无磁干扰问题；长期漂移由两点校准消除。</li>
+<li><b>传感器端点</b>：如果合盖/全开时的 pitch 不是默认 90°/0°，修改 <code>win/config.json</code> 的两个端点。</li>
+<li><b>硬件依赖</b>：Surface Pro 路径不需要 USB 传感器、串口、走线或外接模块。</li>
 <li><b>多显示器</b>：Overlay 只覆盖主屏即可（笔记本场景）。</li>
 </ul>
 </div>
 
-<h2>8. 实施里程碑</h2>
+<h2>7. 实施里程碑</h2>
 <table>
 <tr><th>阶段</th><th>内容</th><th>验收标准</th></tr>
-<tr><td>M1 · 数据通路</td><td>固件烧录、串口输出角度、两点校准</td><td>串口监视器看到稳定 100Hz 角度流，开合 ±1°</td></tr>
+<tr><td>M1 · 传感器验证</td><td>读取 Inclinometer，记录合盖/全开两个端点</td><td>终端看到绝对 pitch，端点映射为 -90°/0°</td></tr>
 <tr><td>M2 · 玻璃层</td><td>Python Overlay：截屏 + 金字塔 + 全屏窗</td><td>手动改参数，blur 平滑可调</td></tr>
-<tr><td>M3 · 角度驱动</td><td>串口接入 + 滤波 + θ→blur/透明度映射 + 缓动</td><td>开合盖子，画面实时"由实入虚/由虚变实"</td></tr>
+<tr><td>M3 · 角度驱动</td><td>绝对姿态映射 + 平滑 + θ→blur/透明度映射 + 缓动</td><td>开合屏幕，画面实时"由实入虚/由虚变实"</td></tr>
 <tr><td>M4 · 打磨</td><td>锁屏联动、降级模式、开机自启、外壳收纳</td><td>日常可用，演示无穿帮</td></tr>
 </table>
 
-<h2>9. 物料清单（你已有的打勾）</h2>
+<h2>8. 物料清单</h2>
 <table>
 <tr><th>物品</th><th>数量</th><th>状态</th></tr>
-<tr><td>ESP32 开发板</td><td>1</td><td>✅ 已有</td></tr>
-<tr><td>ESP8266 + MPU6050 模块</td><td>各1</td><td>✅ 已有（备用方案）</td></tr>
-<tr><td>Dupont 线 / 3M 双面胶 / 热熔胶</td><td>若干</td><td>✅ 一般都有</td></tr>
-<tr><td>Micro-USB / Type-C 数据线（供电+串口）</td><td>1</td><td>按板卡接口备</td></tr>
-<tr><td>软件：Arduino IDE、Python 3.12+、pip 包：pyserial、PyQt6、mss、numpy</td><td>—</td><td>免费</td></tr>
+<tr><td>Surface Pro 或支持 Windows Sensor Platform 的二合一设备</td><td>1</td><td>必需</td></tr>
+<tr><td>ESP32 / ESP8266 / MPU6050</td><td>0</td><td>Surface Pro 版本不需要</td></tr>
+<tr><td>Python 3.8+、PyQt6、PyOpenGL、winsdk、mss、Pillow</td><td>—</td><td>免费</td></tr>
 </table>
 
-<h2>10. 参考来源</h2>
+<h2>9. 参考来源</h2>
 <ul class="toc">
 <li>iPhone Duo 开合动画分析（虚实切换 / 磨砂中转层 / 铰链角度毫秒同步）—— 中华网科技、窗口北京等评测汇编，2026-09</li>
+<li>Windows Sensor Platform / Inclinometer —— Windows Runtime</li>
 <li>Surface Duo Hinge Angle Sensor API（0–360° 角度驱动姿态的官方先例）—— Microsoft Learn</li>
-<li>AS5600 磁编码器方案（本次未采用：你手头无此件，且 MPU6050 已够用）—— ams OSRAM 模块资料</li>
 <li>Windows 毛玻璃实现 —— SetWindowCompositionAttribute（未公开 API）、DwmSetWindowAttribute、WinRT Acrylic（Win32Acrylic 项目）</li>
 </ul>
 

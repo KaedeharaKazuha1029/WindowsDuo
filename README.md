@@ -2,8 +2,6 @@
 
 在 Windows / macOS 笔记本上复刻 **iPhone Duo 折叠屏的「悬浮玻璃」效果**：屏幕开合时，桌面内容像隔着一层绕铰链旋转的玻璃——开合角度越大，内容越模糊、越暗，视线出界处渐变为纯黑。
 
-![demo](win/smoke_widget.png)
-
 ## 效果原理
 
 这不是简单的全屏高斯模糊，而是**空间化的逆投影**：
@@ -15,12 +13,26 @@
 
 理论模型参考自多个开源复刻（DuoLikeAnimation / iphone-duo / MacDuo / FrostFold），按笔记本场景（铰链 = 屏幕底边）重新实现。
 
-## 三个版本
+## 改了什么
+
+**1. 着色器：兼容式 → GLSL 330 core（核心修复）**
+
+- `VS` 改成 `layout(location=0/1) in` + `out`，`FS_DUO` 改成 `in/out vec4 fragColor`，6 处 `gl_FragColor` 全部替换。
+- `_draw_quad` 从立即模式 `glBegin/glVertex` 改成 `initializeGL` 里建 **VAO+VBO**、`glDrawArrays(GL_TRIANGLE_FAN)`。
+
+原因：Intel Windows 驱动的兼容模式只到 GLSL 1.20（我实测 120 通过、130 和 330 compatibility 都被拒），原写法可能导致编译失败。
+
+**2. 着色器失败不再"猝死"** 原来编译失败后仍去调 `glUniform1i` → `GLError 1282` → 进程直接挂掉。现在 `_gl_linked` 为假时只清黑屏并打印明确原因；非 smoke 模式下 1.5 s 后自动退出（exit 2），不会给你留一个全屏黑窗。同时修了 `int(f.profile())` 在 PyQt6 上抛 `TypeError`、以及 GBK 控制台下 `✔/✘` 抛 `UnicodeEncodeError` 导致自检崩溃这两个原有 bug。
+
+**3. 串口自适应** 新增 `candidate_ports()`：按 Espressif 原生 USB(303A) > CH340(1A86) > CP210x(10C4) 排序自动挑口；`AngleReader` 逐个尝试、被占用/拔出后 0.6 s 自愈重扫；支持 `--port COMx` 手动指定。`config.json` 的 `port` 从写死的 COM3 改为 `"auto"`（COM3 是原作者机器的口）。
+
+4. 其它适配：`mss.mss()` → `mss.MSS()`（mss 10.2 已弃用）；`--smoke` 支持 `--g 0.35` 指定浓度并加了 `HoldControl`（原来浓度会被键盘线程拉回 0，演示帧等于没效果）；两个 `.bat` 不再写死 `C:\Users\Kazuha\...`；`offscreen_test.py` 同步 core 化。
+
+## 两个版本
 
 | 版本 | 平台 | 开合角度来源 | 硬件要求 |
 |---|---|---|---|
 | **Windows + ESP32** | Windows | 外接 ESP32 + MPU6050 陀螺仪 | 一块 ESP32 开发板 + MPU6050 |
-| **macOS Port** | macOS | MacBook 内置盖角传感器 (HID) | 无外接硬件（2016+ 机型） |
 | **纯手动** | Windows / macOS | 键盘调节 | 无 |
 
 ## 目录结构
@@ -34,9 +46,6 @@ win/                      Windows 端主程序
   config.json             运行参数
   offscreen_test.py       着色器离屏验证
   run_overlay.bat         ESP 驱动启动   /  run_manual.bat  纯键盘启动
-mac/                      macOS 版 (详见 mac/README.md)
-  glass_overlay_mac.py    主程序: 内置盖角传感器 + OpenGL Core
-  lid_sensor.py|.py       HID 传感器读取 / 意图识别状态机
 ```
 
 ## 快速开始
@@ -52,17 +61,6 @@ mac/                      macOS 版 (详见 mac/README.md)
    - `win/run_overlay.bat` — ESP 角度驱动（键盘 `r` 切换手动/自动）
    - `win/run_manual.bat` — 纯键盘手动
 4. 键盘操作（先点一下控制台窗口获得焦点）：`↑/↓` 浓度 ±3%，`←` 清零，`→` 拉满，`r` 切换控制方，`Esc` 退出
-
-### macOS
-
-```bash
-python3 -m venv .venv-mac && source .venv-mac/bin/activate
-pip install PyQt6 PyOpenGL numpy Pillow pyobjc-framework-Cocoa pyobjc-framework-Quartz
-python mac/glass_overlay_mac.py          # 自动模式
-python mac/glass_overlay_mac.py --manual # 手动模式
-```
-
-需要"屏幕录制"权限，详见 [mac/README.md](mac/README.md)。
 
 ## 主要参数 (`config.json`)
 

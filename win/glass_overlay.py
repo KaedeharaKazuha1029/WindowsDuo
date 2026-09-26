@@ -307,7 +307,13 @@ class ManualControl(threading.Thread):
             if delta is not None:
                 with self.lock:
                     self.auto = False       # 任何调节键都切回手动覆盖
-                    self.target = max(0.0, min(1.0, self.target + delta if abs(delta) < 0.5 else delta))
+                    if abs(delta) >= 0.5:               # →/d: 直接拉满
+                        self.target = max(0.0, min(1.0, delta))
+                    elif delta == 0.0:                  # ←/a: 清零
+                        # 注意: 不能写成 target + delta, 那样加 0 等于"没有反应"
+                        self.target = 0.0
+                    else:                               # ↑↓/w/s: 在当前值上微调
+                        self.target = max(0.0, min(1.0, self.target + delta))
                     self.last_key = key
 
 
@@ -324,15 +330,45 @@ class HoldControl:
 
 
 # ---------------------------------------------------------------- 截图线程
+def _open_dxgi(region):
+    """打开 DXGI Desktop Duplication (dxcam)。不可用时返回 None。
+    实测: 新帧 60/s、单次约 6.6ms; 而 GDI(mss) 只有 30/s、33ms。"""
+    try:
+        import dxcam
+    except ImportError:
+        return None
+    try:
+        cam = dxcam.create(output_color="BGRA")
+        if cam is None:
+            return None
+        cam.grab(region=(region["left"], region["top"],
+                         region["left"] + region["width"],
+                         region["top"] + region["height"]))
+        return cam
+    except Exception as e:  # noqa
+        print("[capture] DXGI 初始化失败, 回退 GDI:", e)
+        return None
+
+
 class CaptureWorker(threading.Thread):
-    def __init__(self, region):
+    """抓屏线程。capture='auto' 时优先 DXGI(dxcam), 失败自动回退 mss(GDI)。
+
+    注意: 满屏窗口会被 Windows 走"全屏直通"呈现, DXGI 会把它整块抓成纯黑
+    (GDI 则是看不到它)。所以 Overlay 窗口要比屏幕少 1px (见 config.win_shrink_px),
+    这样 DXGI 才能抓到背后真正的桌面。
+    """
+
+    def __init__(self, region, backend="auto"):
         super().__init__(daemon=True)
         self.region = region
+        self.backend = backend          # auto | dxgi | gdi
+        self.active = "none"
         self.request = threading.Event()
         self.done = threading.Event()
         self.lock = threading.Lock()
         self.frame = None          # (bytes, w, h, seq)
         self.busy = False
+        self.grabs = 0
 
     def latest(self):
         with self.lock:
@@ -342,9 +378,53 @@ class CaptureWorker(threading.Thread):
         if not self.busy:
             self.request.set()
 
-    def run(self):
+    # ---------- DXGI ----------
+    def _run_dxgi(self):
+        cam = _open_dxgi(self.region)
+        if cam is None:
+            return False
+        self.active = "dxgi"
+        print(f"[capture] 使用 DXGI Desktop Duplication "
+              f"({self.region['width']}x{self.region['height']})")
         seq = 0
+        fails = 0
+        reg = (self.region["left"], self.region["top"],
+               self.region["left"] + self.region["width"],
+               self.region["top"] + self.region["height"])
+        while True:
+            self.request.wait()
+            self.request.clear()
+            self.done.clear()
+            self.busy = True
+            try:
+                arr = cam.grab(region=reg)          # None = 没有新帧
+                if arr is not None:
+                    seq += 1
+                    h, w = arr.shape[0], arr.shape[1]
+                    with self.lock:
+                        self.frame = (arr.tobytes(), w, h, seq)
+                    self.grabs = seq
+                fails = 0
+            except Exception as e:  # noqa
+                fails += 1
+                if fails >= 5:
+                    print("[capture] DXGI 连续失败, 回退 GDI:", e)
+                    try:
+                        del cam
+                    except Exception:  # noqa
+                        pass
+                    return True          # 已经有帧了, 让上层决定是否回退
+                time.sleep(0.05)
+            finally:
+                self.busy = False
+                self.done.set()
+
+    # ---------- GDI ----------
+    def _run_gdi(self):
         MSS = getattr(mss, "MSS", None) or mss.mss      # mss>=10 弃用了 mss.mss()
+        self.active = "gdi"
+        print(f"[capture] 使用 GDI (mss) {self.region['width']}x{self.region['height']}")
+        seq = 0
         with MSS() as sct:
             while True:
                 self.request.wait()
@@ -357,11 +437,23 @@ class CaptureWorker(threading.Thread):
                     seq += 1
                     with self.lock:
                         self.frame = (raw, shot.width, shot.height, seq)
+                    self.grabs = seq
                 except Exception as e:  # noqa
                     print("[capture] error:", e)
                 finally:
                     self.busy = False
                     self.done.set()
+
+    def run(self):
+        if self.backend in ("auto", "dxgi"):
+            if self._run_dxgi():
+                # DXGI 跑失败过 -> 回退 GDI (保留已有帧, 画面不至于卡住)
+                if self.backend == "auto":
+                    self._run_gdi()
+                return
+            if self.backend == "dxgi":
+                print("[capture] 指定了 dxgi 但初始化失败, 改用 GDI")
+        self._run_gdi()
 
 
 # ---------------------------------------------------------------- GL 窗口
@@ -394,7 +486,17 @@ class GlassGLWidget(QOpenGLWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setGeometry(screen.geometry())
+        # 窗口比屏幕少 1 像素(默认少最底下一行): 满屏窗口会被 Windows 走"全屏直通"
+        # 呈现, DXGI 抓屏会把整块抓成纯黑; 少 1px 就回到普通合成路径, 抓屏正常。
+        # 少掉的那一行在屏幕最底部(= 铰链处, 本来就接近清晰), 视觉上看不出来。
+        shrink = int(CFG.get("win_shrink_px", 1))
+        g = screen.geometry()
+        dpr = screen.devicePixelRatio()
+        if shrink > 0:
+            h = max(1, int(round((g.height() * dpr - shrink) / dpr)))
+            self.setGeometry(g.x(), g.y(), g.width(), h)
+        else:
+            self.setGeometry(g)
         self.setWindowTitle("duo-glass")
 
     def showEvent(self, _ev):
@@ -608,6 +710,10 @@ def main():
 
     port_cfg = arg_value("--port", CFG.get("port", "auto"))
     baud = int(CFG.get("baud", 115200))
+    backend = str(arg_value("--capture", CFG.get("capture", "auto"))).lower()
+    if backend not in ("auto", "dxgi", "gdi"):
+        print(f"[警告] 未知抓屏后端 {backend!r}, 回退 auto")
+        backend = "auto"
 
     kb = ManualControl()
     kb.start()
@@ -618,14 +724,16 @@ def main():
         reader = AngleReader(port_cfg, baud)
         reader.start()
 
-    capturer = CaptureWorker(region)
+    capturer = CaptureWorker(region, backend=backend)
     capturer.start()
 
     print("=" * 60)
-    print("iPhone Duo 悬浮玻璃 · Windows 端 v3.1 (OpenGL 3.3 core)")
+    print("iPhone Duo 悬浮玻璃 · Windows 端 v3.2 (OpenGL 3.3 core)")
     print(f"  铰链=屏幕底边  最大转角 {CFG.get('max_tilt_deg')}°  眼距 {CFG.get('eye_dist_h')}x屏高")
     print(f"  blur_spread={CFG.get('blur_spread')}  darkening={CFG.get('darkening')}  "
           f"taps<={CFG.get('max_taps')}")
+    print(f"  抓屏: {backend} (auto=优先 DXGI, 失败回退 GDI)  "
+          f"刷新 {CFG.get('refresh_hz')}Hz  窗口缩 {CFG.get('win_shrink_px', 1)}px")
     if reader is not None:
         if is_auto(port_cfg):
             cands = candidate_ports()

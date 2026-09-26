@@ -1,5 +1,5 @@
 {
-  "port": "COM3",
+  "port": "auto",
   "baud": 115200,
   "axis": "a",
   "angle_closed": 10.0,

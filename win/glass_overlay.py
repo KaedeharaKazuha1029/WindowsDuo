@@ -16,11 +16,19 @@ iPhone Duo「悬浮玻璃」· Windows 端 v3 (复刻着色器版)
   - AngleReader   : 串口 100Hz 读 {"a":..,"b":..}   (--manual 可脱离串口)
   - CaptureWorker : mss 截屏原始帧
   - GL 主线程     : 上传纹理(带 mipmap) → 单 pass Duo 折叠着色器
+
+着色器为 GLSL 330 **core** (显式属性 + VAO/VBO)。旧的 330 compatibility 写法
+(varying / gl_Vertex / fragColor) 在 Intel Windows 驱动上会被拒
+("not available in current GLSL version"), 因为 Intel 的兼容模式只到 GLSL 1.20。
+
 用法:
   run_overlay.bat   串口驱动 | run_manual.bat   键盘手动 (↑↓←→)
+  --port COM5       手动指定串口 (默认 auto: 自动挑选 Espressif/CH340/CP210x)
   --selftest 无窗口自检 | --smoke 4s 全屏演示自退
 """
+import ctypes
 import json
+import struct
 import sys
 import threading
 import time
@@ -38,16 +46,26 @@ from PyQt6.QtWidgets import QApplication
 CFG_PATH = Path(__file__).with_name("config.json")
 CFG = json.loads(CFG_PATH.read_text("utf-8"))
 
-VS = """#version 330 compatibility
-varying vec2 vUV;
+# 中文控制台多为 GBK(cp936): 遇到编码不了的字符只替换, 不要让 print 抛 UnicodeEncodeError
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:  # noqa
+        pass
+
+# 顶点着色器: GLSL 330 core, 属性位置与 _draw_quad 的 VAO 布局一致
+VS = """#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aUV;
+out vec2 vUV;
 void main() {
-    vUV = gl_MultiTexCoord0.xy;
-    gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+    vUV = aUV;
+    gl_Position = vec4(aPos, 0.0, 1.0);
 }
 """
 
 # Duo 折叠着色器: 逆投影 + Vogel 盘模糊 + mip LOD + 边缘覆盖率
-FS_DUO = """#version 330 compatibility
+FS_DUO = """#version 330 core
 uniform sampler2D uTex;
 uniform vec2  uRes;      // 截图尺寸 px
 uniform float uTilt;     // 玻璃转角 (弧度), 0 = 贴合界面
@@ -55,7 +73,8 @@ uniform float uEyeZ;     // 眼睛到界面平面距离 px
 uniform float uSpread;   // 单位间隙 → 模糊半径 (散射半角正切)
 uniform float uDark;     // 单位模糊半径损失的光量
 uniform int   uMaxTaps;
-varying vec2 vUV;
+in vec2 vUV;
+out vec4 fragColor;
 
 const float GOLDEN = 2.39996322972865332;
 const float TWO_PI = 6.28318530717958648;
@@ -71,7 +90,7 @@ void main() {
     vec2 uvFlat = vec2(vUV.x, 1.0 - vUV.y);   // 平视采样 (截图行序 top-first)
 
     if (tilt < 1e-5) {
-        gl_FragColor = vec4(texture(uTex, uvFlat).rgb, 1.0);
+        fragColor = vec4(texture(uTex, uvFlat).rgb, 1.0);
         return;
     }
 
@@ -82,7 +101,7 @@ void main() {
 
     // 光线 eye -> glass 像素, 延长交到界面平面 z=0
     float depth = eye.z - glass.z;
-    if (depth <= 1e-3) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    if (depth <= 1e-3) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
     float t   = eye.z / depth;
     vec2 hit  = eye.xy + (glass.xy - eye.xy) * t;     // 界面平面上的落点 (px, y 向上)
 
@@ -93,7 +112,7 @@ void main() {
     // 整个模糊核都在界面之外 → 黑
     if (hit.x < -radius || hit.x > uRes.x + radius ||
         hit.y < -radius || hit.y > uRes.y + radius) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return;
+        fragColor = vec4(0.0, 0.0, 0.0, 1.0); return;
     }
 
     // 磨砂玻璃吸光: 与散射成正比地变暗 (iphone-duo / DuoLike 同款)
@@ -102,7 +121,7 @@ void main() {
     vec2 uvHit = vec2(hit.x / uRes.x, 1.0 - hit.y / uRes.y);
 
     if (radius < 0.5) {
-        gl_FragColor = vec4(textureLod(uTex, uvHit, 0.0).rgb * att, 1.0);
+        fragColor = vec4(textureLod(uTex, uvHit, 0.0).rgb * att, 1.0);
         return;
     }
 
@@ -129,16 +148,45 @@ void main() {
         sum += textureLod(uTex, uv, lod).rgb * cx * cy;
     }
     vec3 c = sum / float(taps) * att;
-    gl_FragColor = vec4(c, 1.0);
+    fragColor = vec4(c, 1.0);
 }
 """
 
 
 # ---------------------------------------------------------------- 串口线程
+def candidate_ports():
+    """按"最可能是本项目那块板"排序的可用串口列表。
+    优先级: Espressif 原生 USB(303A) > CH340(1A86) > CP210x(10C4) > 其它。"""
+    from serial.tools import list_ports
+    try:
+        ports = list(list_ports.comports())
+    except Exception:  # noqa
+        return []
+
+    def rank(p):
+        hw = (p.hwid or "").upper()
+        if "303A" in hw:
+            return 0
+        if "1A86" in hw:
+            return 1
+        if "10C4" in hw:
+            return 2
+        return 3
+
+    return [p.device for p in sorted(ports, key=rank)]
+
+
+def is_auto(port):
+    return port is None or str(port).strip().lower() in ("", "auto")
+
+
 class AngleReader(threading.Thread):
+    """串口读角度。port='auto' 时自动枚举候选端口, 端口被占用/拔插都能自愈。"""
+
     def __init__(self, port, baud):
         super().__init__(daemon=True)
         self.port, self.baud = port, baud
+        self.active = None            # 当前实际连接的端口
         self.lock = threading.Lock()
         self.angle = None
         self.other = None
@@ -150,41 +198,68 @@ class AngleReader(threading.Thread):
         with self.lock:
             return self.angle, self.other, self.fps, self.status
 
+    def _ports(self):
+        """本次尝试要依次打开的端口列表。"""
+        if not is_auto(self.port):
+            return [str(self.port)]
+        return candidate_ports()
+
     def run(self):
         import re
         pat = re.compile(r"\{[^}]*\}")
-        n, t0 = 0, time.time()
         while not self._stop:
-            try:
-                with serial.Serial(self.port, self.baud, timeout=1) as ser:
-                    self._set("connected")
-                    buf = b""
-                    while not self._stop:
-                        buf += ser.readline()
-                        if b"}" not in buf:
-                            buf = buf[-64:] if len(buf) > 256 else buf
-                            continue
-                        line, buf = buf.rsplit(b"}", 1)
-                        line = (line + b"}").decode("ascii", "ignore")
-                        m = pat.search(line)
-                        if not m:
-                            continue
-                        try:
-                            d = json.loads(m.group(0))
-                        except ValueError:
-                            continue
-                        with self.lock:
-                            self.angle = float(d[CFG.get("axis", "a")])
-                            self.other = float(d.get("b", 0.0))
-                        n += 1
-                        now = time.time()
-                        if now - t0 >= 1:
-                            with self.lock:
-                                self.fps = n / (now - t0)
-                            n, t0 = 0, now
-            except (serial.SerialException, OSError):
-                self._set("waiting " + self.port)
+            ports = self._ports()
+            if not ports:
+                self._set("未发现串口")
                 time.sleep(2)
+                continue
+
+            for p in ports:
+                if self._stop:
+                    break
+                try:
+                    self._read_loop(p, pat)
+                except (serial.SerialException, OSError) as e:
+                    self.active = None
+                    if is_auto(self.port):
+                        self._set(f"{p} 不可用")
+                    else:
+                        self._set(f"打不开 {p} ({type(e).__name__})")
+                    time.sleep(0.6 if is_auto(self.port) else 2)
+            if not self._stop and is_auto(self.port):
+                self._set("等待串口")
+                time.sleep(0.5)
+
+    def _read_loop(self, port, pat):
+        """打开 port 持续读角度; 直到停止或被拔出(抛 SerialException)。"""
+        with serial.Serial(port, self.baud, timeout=1) as ser:
+            self.active = port
+            self._set("connected " + port)
+            buf = b""
+            n, t0 = 0, time.time()
+            while not self._stop:
+                buf += ser.readline()
+                if b"}" not in buf:
+                    buf = buf[-64:] if len(buf) > 256 else buf
+                    continue
+                line, buf = buf.rsplit(b"}", 1)
+                line = (line + b"}").decode("ascii", "ignore")
+                m = pat.search(line)
+                if not m:
+                    continue
+                try:
+                    d = json.loads(m.group(0))
+                except ValueError:
+                    continue
+                with self.lock:
+                    self.angle = float(d[CFG.get("axis", "a")])
+                    self.other = float(d.get("b", 0.0))
+                n += 1
+                now = time.time()
+                if now - t0 >= 1:
+                    with self.lock:
+                        self.fps = n / (now - t0)
+                    n, t0 = 0, now
 
     def _set(self, s):
         with self.lock:
@@ -236,6 +311,18 @@ class ManualControl(threading.Thread):
                     self.last_key = key
 
 
+class HoldControl:
+    """固定浓度 (--smoke 无头演示用): 不读键盘, 浓度保持不变, 否则会被键盘目标值拉回 0。"""
+
+    quit_flag = False
+
+    def __init__(self, value):
+        self.value = float(value)
+
+    def get(self):
+        return self.value, "hold", False
+
+
 # ---------------------------------------------------------------- 截图线程
 class CaptureWorker(threading.Thread):
     def __init__(self, region):
@@ -257,7 +344,8 @@ class CaptureWorker(threading.Thread):
 
     def run(self):
         seq = 0
-        with mss.mss() as sct:
+        MSS = getattr(mss, "MSS", None) or mss.mss      # mss>=10 弃用了 mss.mss()
+        with MSS() as sct:
             while True:
                 self.request.wait()
                 self.request.clear()
@@ -316,7 +404,6 @@ class GlassGLWidget(QOpenGLWidget):
         if getattr(self, "_no_exclude", False):
             return
         try:
-            import ctypes
             WDA_EXCLUDEFROMCAPTURE = 0x11
             r = ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()),
                                                               WDA_EXCLUDEFROMCAPTURE)
@@ -331,14 +418,48 @@ class GlassGLWidget(QOpenGLWidget):
 
     # ---------- GL ----------
     def initializeGL(self):
-        print("[GL] initializeGL, context =", self.context().isValid(),
-              self.context().format().majorVersion(), self.context().format().minorVersion())
+        ctx = self.context()
+        f = ctx.format()
+        prof = f.profile()
+        prof_i = getattr(prof, "value", prof)      # PyQt6 枚举要取 .value
+        prof_name = {0: "NoProfile", 1: "CoreProfile",
+                     2: "CompatibilityProfile"}.get(prof_i, prof)
+        print("[GL] initializeGL, context =", ctx.isValid(),
+              f.majorVersion(), f.minorVersion(), prof_name)
+
+        self._gl_linked = False
         self.prog = QOpenGLShaderProgram(self)
         ok_v = self.prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, VS)
         ok_f = self.prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, FS_DUO)
-        if not (ok_v and ok_f and self.prog.link()):
-            print("[GL] 着色器编译失败:\n", self.prog.log())
+        linked = bool(ok_v and ok_f and self.prog.link())
+        self._gl_linked = linked
+        if not linked:
+            # 不再让 paintGL 抛 GLError 直接把程序打死: 只打印并保持黑屏
+            print("[GL] 着色器编译/链接失败:\n" + self.prog.log())
+            print("[GL] 本项目着色器需要 OpenGL 3.3 core。若显卡驱动不支持, "
+                  "请更新显卡驱动或换一台支持 GL 3.3 的机器。")
+            self._gl_ready = True
+            return
         self.prog.bind()
+
+        # VAO/VBO (core profile 没有立即模式, 必须显式上传顶点)
+        self.vao = GL.glGenVertexArrays(1)
+        GL.glBindVertexArray(self.vao)
+        self.vbo = GL.glGenBuffers(1)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
+        # 两个三角形组成全屏四边形: xy(位置) + uv, 与 VS 的 location 0/1 对应
+        verts = (-1.0, -1.0, 0.0, 0.0,
+                  1.0, -1.0, 1.0, 0.0,
+                  1.0,  1.0, 1.0, 1.0,
+                 -1.0,  1.0, 0.0, 1.0)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, 4 * len(verts),
+                        struct.pack(f"{len(verts)}f", *verts), GL.GL_STATIC_DRAW)
+        stride = 4 * 4
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, stride, ctypes.c_void_p(0))
+        GL.glEnableVertexAttribArray(1)
+        GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, GL.GL_FALSE, stride, ctypes.c_void_p(8))
+        GL.glBindVertexArray(0)
 
         self.cap_tex = GL.glGenTextures(1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.cap_tex)
@@ -355,6 +476,11 @@ class GlassGLWidget(QOpenGLWidget):
             if not hasattr(self, "_warned_gl"):
                 self._warned_gl = True
                 print("[GL] paintGL 时 _gl_ready=False (initializeGL 未完成?)")
+            return
+        if not getattr(self, "_gl_linked", False):
+            # 着色器没链上: 画黑, 不调 uniform (否则 GLError 1282 会终止程序)
+            GL.glClearColor(0, 0, 0, 1)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
             return
         dpr = self.devicePixelRatioF()
         w = max(1, int(self.width() * dpr))
@@ -393,12 +519,9 @@ class GlassGLWidget(QOpenGLWidget):
         self._draw_quad()
 
     def _draw_quad(self):
-        GL.glBegin(GL.GL_QUADS)
-        GL.glTexCoord2f(0.0, 0.0); GL.glVertex2f(-1.0, -1.0)
-        GL.glTexCoord2f(1.0, 0.0); GL.glVertex2f(1.0, -1.0)
-        GL.glTexCoord2f(1.0, 1.0); GL.glVertex2f(1.0, 1.0)
-        GL.glTexCoord2f(0.0, 1.0); GL.glVertex2f(-1.0, 1.0)
-        GL.glEnd()
+        GL.glBindVertexArray(self.vao)
+        GL.glDrawArrays(GL.GL_TRIANGLE_FAN, 0, 4)
+        GL.glBindVertexArray(0)
 
     # ---------- 主循环 ----------
     def tick(self):
@@ -454,6 +577,15 @@ class GlassGLWidget(QOpenGLWidget):
 
 
 # ---------------------------------------------------------------- 入口
+def arg_value(name, default=None):
+    """取 `--name value` 形式的命令行参数。"""
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return default
+
+
 def main():
     smoke = "--smoke" in sys.argv
     selftest = "--selftest" in sys.argv
@@ -461,7 +593,9 @@ def main():
 
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
-    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    # core profile: Intel Windows 驱动的兼容模式只到 GLSL 1.20,
+    # 330 compatibility 着色器会被拒, 因此统一走 core。
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
     fmt.setSwapInterval(1)
     QSurfaceFormat.setDefaultFormat(fmt)
 
@@ -472,22 +606,32 @@ def main():
     region = {"left": geom.x(), "top": geom.y(),
               "width": int(geom.width() * dpr), "height": int(geom.height() * dpr)}
 
+    port_cfg = arg_value("--port", CFG.get("port", "auto"))
+    baud = int(CFG.get("baud", 115200))
+
     kb = ManualControl()
     kb.start()
     if manual:
         reader = None
         print("[手动模式] 不连接 ESP")
     else:
-        reader = AngleReader(CFG["port"], int(CFG.get("baud", 115200)))
+        reader = AngleReader(port_cfg, baud)
         reader.start()
+
     capturer = CaptureWorker(region)
     capturer.start()
 
     print("=" * 60)
-    print("iPhone Duo 悬浮玻璃 · Windows 端 v3 (复刻着色器)")
+    print("iPhone Duo 悬浮玻璃 · Windows 端 v3.1 (OpenGL 3.3 core)")
     print(f"  铰链=屏幕底边  最大转角 {CFG.get('max_tilt_deg')}°  眼距 {CFG.get('eye_dist_h')}x屏高")
     print(f"  blur_spread={CFG.get('blur_spread')}  darkening={CFG.get('darkening')}  "
           f"taps<={CFG.get('max_taps')}")
+    if reader is not None:
+        if is_auto(port_cfg):
+            cands = candidate_ports()
+            print(f"  串口: 自动  (当前候选: {', '.join(cands) if cands else '无'})")
+        else:
+            print(f"  串口: {port_cfg} @{baud}")
     print("-" * 60)
     print("  默认=正常显示(浓度0)。先点一下本控制台窗口再按键!")
     print("  ↑/↓ 调浓度   ← 清空   → 拉满   r 切换角度自动跟随   Esc 退出")
@@ -499,13 +643,19 @@ def main():
         capturer.kick()
         capturer.done.wait(timeout=3)
         frame = capturer.latest()
-        ok = (frame is not None) and (manual or angle is not None)
+        ser_ok = manual or angle is not None
+        ok = (frame is not None) and ser_ok
         print(f"[自检] 串口: {st} angle={angle} fps={fps:.0f} | "
               f"截屏: {'OK %dx%d' % (frame[1], frame[2]) if frame else 'FAIL'}"
-              f"  => {'PASS ✔' if ok else 'FAIL ✘'}")
+              f"  => {'PASS' if ok else 'FAIL'}")
+        if not ser_ok and not manual:
+            print("      串口没有角度数据: 确认板子已烧本项目固件, 且端口未被")
+            print("      其它程序(Thonny/Arduino 串口监视器)占用; 也可用 --port COMx 指定。")
         return 0 if ok else 1
 
-    widget = GlassGLWidget(screen, reader, capturer, manual=kb)
+    g_smoke = float(arg_value("--g", 0.85))
+    widget = GlassGLWidget(screen, reader, capturer,
+                           manual=HoldControl(g_smoke) if smoke else kb)
 
     print("[运行] Overlay 常驻显示。Ctrl+C 退出。")
 
@@ -530,7 +680,8 @@ def main():
             try:
                 import mss as _mss
                 from PIL import Image as _Image
-                with _mss.MSS() as sct2:
+                MSS = getattr(_mss, "MSS", None) or _mss.mss
+                with MSS() as sct2:
                     shot = sct2.grab(region)
                     out2 = str(Path(__file__).with_name("smoke_frame.png"))
                     _Image.frombytes("RGB", shot.size, shot.rgb).save(out2)
@@ -541,7 +692,7 @@ def main():
 
         # 调试: 关闭后台重截(截图里会包含 Overlay 自身, 多次重截会反馈污染成纯色)
         widget.refresh_hz = 0.0
-        widget.g = 0.85
+        widget.g = g_smoke
         QTimer.singleShot(2000, dump_and_quit)
         widget.show()
         widget.shown = True
@@ -550,8 +701,18 @@ def main():
         widget.show()
         widget.shown = True
         capturer.kick()
-    app.exec()
-    return 0
+
+    # 着色器没链上就别留着全屏黑屏窗口让人莫名其妙
+    if not smoke:
+        def check_gl():
+            if not getattr(widget, "_gl_linked", False):
+                print("\n[致命] 着色器未链接, 无法渲染。请更新显卡驱动。")
+                app.exit(2)
+
+        QTimer.singleShot(1500, check_gl)
+
+    rc = app.exec()
+    return rc if isinstance(rc, int) else 0
 
 
 if __name__ == "__main__":

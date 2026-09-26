@@ -42,9 +42,11 @@
 
 原版用 mss（GDI `BitBlt`）：整屏 1920×1080 单次中位 **33.3 ms**（≈30 Hz 封顶），实测程序里 72~84 ms，所以只能 3 Hz 刷新——拖动窗口时玻璃里就是一张 3 fps 的"冻屏"。现在 `auto` 优先走 **DXGI Desktop Duplication**（`dxcam`）：单次中位 **6.6 ms**、稳定拿到 60 fps 新帧。模拟拖动实测玻璃内画面更新 **3.0 fps → 18.6 fps**，进程 CPU 36% → 50%（单核百分比）。未安装 `dxcam`/`numpy`、或初始化失败时**自动回退 GDI**，行为与原来一致。
 
-**7. 窗口比屏幕少 1 像素**（`win_shrink_px`: 1）
+**7. 窗口比屏幕少几像素**（`win_shrink_px`: 2）
 
-**这是让 DXGI 可用的前提**：恰好铺满物理屏幕的窗口会被 Windows 走"全屏直通"呈现，DXGI 抓屏会把整块抓成**纯黑**（GDI 则是完全看不到它）。窗口少 1 行后回到普通合成路径，抓屏才能拿到真实桌面。少掉的这一行在屏幕最底部（= 铰链处，本来就接近清晰），视觉上看不出来。
+**这是让 DXGI 可用的前提**：恰好铺满物理屏幕的窗口会被 Windows 走"全屏直通"呈现，DXGI 抓屏会把整块抓成**纯黑**（GDI 则是完全看不到它）。窗口少几行后回到普通合成路径，抓屏才能拿到真实桌面。少掉的那几行在屏幕最底部（= 铰链处，本来就接近清晰），视觉上看不出来。
+
+**为什么是 2 而不是 1**：这个值要经过 `round((物理高 − N) / dpr)` 换算成逻辑尺寸，dpr 不是整数时会被四舍五入。实测：dpr=1.25（125%）时 1 就够；但 **200% 缩放（4K 笔记本常见）下 `1` 会被算回满屏**，DXGI 又抓到纯黑（窗口物理高 1080/1080、抓到的中心 R=0）。改成 2 后，125% 与 200% 下都稳定少 2px、抓屏正常。
 
 副作用需注意：窗口不再是"满屏"，抓屏就真的能看到它了，于是 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` 的自我排除从"锦上添花"变成**必须生效**（代码里保留，设置失败会打印警告；别删这段）。
 
@@ -56,9 +58,12 @@ DXGI 变便宜之后 30Hz 才有意义；实测 60Hz 与 30Hz 结果相同（瓶
 
 原版把"清零"编码成 `delta = 0.0` 哨兵值，但判断条件是 `abs(delta) < 0.5`，于是走了"在当前值上累加"分支 → `target + 0.0` 等于原值不变（而 `→` 的 `1.0` 不满足条件、走 else 直接赋值，所以一直正常）。现已拆成"拉满 / 清零 / 微调"三个分支。
 
-**10. `run_overlay.bat` 改为纯 ASCII**
+**10. 两个 `.bat` 换掉解释器写法**
 
-AGENTS.md 第 4 条要求 bat 只能是 ASCII：原先注释里的中文经 cmd 的 GBK 解码会把两行 `REM` 粘连在一起。现在两个 bat 非 ASCII 字节数均为 0。
+- **纯 ASCII**：AGENTS.md 第 4 条要求 bat 只能是 ASCII——原先注释里的中文经 cmd 的 GBK 解码会把两行 `REM` 粘连在一起。
+- **不再写死 `py -3.14`**：原来的 `where py && set PY=py -3.14` 在只装了 3.12/3.11 的机器上会直接报 `No runtime installed that matches 3.14` 然后 `pause`，**不会**回退。现在按 `py -3.14 → 3.13 → 3.12 → 3.11 → py -3 → python` 依次探测，且探测命令里直接 `import PyQt6, OpenGL, mss, serial`——即"挑一个依赖齐全的解释器"，全都不可用时打印 pip 安装命令。
+  探测用**标准输出**而不是 `errorlevel`：实测 `py` 启动器在版本不存在时返回的是**负数退出码**，`if not errorlevel 1` 会把它误判成"成功"（这正是第一版回退逻辑没生效的原因）。
+- 顺带统一为 CRLF 行尾（Windows 批处理的常规格式；仓库里原本是 LF）。
 
 ## 测试情况
 
@@ -125,12 +130,48 @@ win/                      Windows 端主程序
    - `win/run_overlay.bat` — ESP 角度驱动（键盘 `r` 切换手动/自动）
    - `win/run_manual.bat` — 纯键盘手动
 4. 键盘操作（先点一下控制台窗口获得焦点）：`↑/↓` 浓度 ±3%，`←` 清零，`→` 拉满，`r` 切换控制方，`Esc` 退出
-5. 依赖：`PyQt6 / PyOpenGL / pyserial / mss / Pillow` 为必需；`dxcam + numpy` **可选**——装了才走 DXGI 抓屏（拖动更跟手），不装或初始化失败会自动回退 GDI：
+5. 依赖：`PyQt6 / PyOpenGL / mss / pyserial` 为必需（`Pillow` 只有 `--smoke` 用到，`dxcam + numpy` 可选——装了才走 DXGI 抓屏、拖动更跟手）：
    ```
-   pip install dxcam numpy
+   python -m pip install PyQt6 PyOpenGL mss pyserial Pillow
+   python -m pip install dxcam numpy        # 可选
    ```
+   两个 `.bat` 启动时会**自动挑选一个依赖齐全的 Python 解释器**，全都没有则打印上面这条安装命令。
 
-> **注意**：硬件部分（接线 / 烧录 / 角度标定）**尚未验证**，见上文「[测试情况](#测试情况)」。当前手动模式（`run_manual.bat` + 键盘）是可用状态。
+> **注意 1**：硬件部分（接线 / 烧录 / 角度标定）**尚未验证**，见上文「[测试情况](#测试情况)」。当前手动模式（`run_manual.bat` + 键盘）是可用状态。
+>
+> **注意 2**：**必须从带控制台的窗口启动**（双击 `.bat` 或在 cmd 里运行），不要用 `pythonw`、图形化快捷方式等方式启动——那样键盘线程会失灵并把 CPU 跑满，详见「[在其它设备上运行](#在其它设备上运行纯手动模式)」。
+
+## 在其它设备上运行（纯手动模式）
+
+把这套东西拷到另一台 Windows 机器上、**不改任何代码**直接跑，需要满足以下几个前提（下表均为本机实测验证过的行为）：
+
+| 前提 | 说明 | 不满足时 |
+|---|---|---|
+| **Windows** | 代码用到 `msvcrt` / `ctypes.windll` / `SetWindowDisplayAffinity` / DXGI | macOS / Linux 不行（仓库另有 `mac/` 实现） |
+| **显卡驱动支持 OpenGL 3.3 core** | 远程桌面会话、纯虚拟机、刚装完系统还没装显卡驱动（微软基本显示适配器只有 GL 1.1）都不满足 | 启动约 1.5 s 后打印 `[致命] 着色器未链接, 无法渲染` 并以 exit code 2 退出（不会卡死黑屏，但用不了） |
+| **依赖齐全** | `PyQt6` / `PyOpenGL` / `mss` / **`pyserial`**（手动模式并不用串口，但它是模块级 import）；`Pillow` 仅 `--smoke` 需要；`dxcam + numpy` 可选 | 启动即 ImportError；两个 `.bat` 会提前探测依赖并打印 pip 命令 |
+| **Python ≥ 3.9** | 代码没有 3.10+ 专属语法 | `.bat` 会自动挑选可用的解释器 |
+| **从带控制台的窗口启动** | 双击 `.bat`，或在 cmd 里 `python glass_overlay.py --manual`。**不要**用 `pythonw`、图形化快捷方式、或某些 IDE 的"无控制台运行" | 实测：`msvcrt.getwch()` 会立刻返回 `'\uffff'` 而不阻塞，键盘线程变成死循环——**所有按键失灵，且进程 CPU 由约 50% 升到 118%（单核）** |
+
+参数上建议 `win_shrink_px` 保持 **2**：0 或 1 在部分 DPI 缩放比例下会让 DXGI 抓到纯黑（见「改了什么」第 7 条）。
+
+### 拷过去之后先自检
+
+```
+cd win
+python glass_overlay.py --smoke --manual --g 0.35     REM 跑 2 秒自动退出并抓帧
+```
+
+能正常退出（exit 0）就说明 GL 与抓屏都正常；若打印 `[致命] 着色器未链接` 则是显卡驱动不支持。
+注意 `--selftest` **不覆盖着色器**（它不创建窗口，只测截屏与串口），别只用它判断能不能用。
+
+### 只在特定环境才需要的降级（改 `config.json` 即可，无需改代码）
+
+| 情况 | 建议配置 |
+|---|---|
+| Windows 10 低于 2004（不支持 `WDA_EXCLUDEFROMCAPTURE`） | `capture` 设 `"gdi"` + `win_shrink_px` 设 `0`（满屏窗口对 GDI 天然不可见，既不需要自我排除也不会反馈）。**不要**配成 `win_shrink_px: 0` + `capture: "auto"`，那样 DXGI 会抓到纯黑 |
+| 多显示器 / 笔记本混合显卡 / HDR 显示器 / 播放受保护内容 | `capture` 设 `"gdi"`（DXGI 在混合显卡下可能选错输出，HDR 下返回浮点格式，受保护内容返回黑块） |
+| 没装 `dxcam`（自动回退 GDI） | 依然可用：实测 GDI@30Hz 玻璃内画面 13.4 fps、CPU 44%（DXGI 为 18.6 fps / 50%）。想更省 CPU 可把 `refresh_hz` 调到 3~5 |
 
 ## 主要参数 (`config.json`)
 
@@ -142,7 +183,7 @@ win/                      Windows 端主程序
 | `eye_dist_h` | 视点距离（屏幕高度的倍数） |
 | `max_tilt_deg` | 最大倾角（默认 60；**调大到 70 以上画面会开始整片变黑**，88 就是原版那种"折到底全黑"） |
 | `capture` | 抓屏后端：`auto`（优先 DXGI，失败回退 GDI）/ `dxgi` / `gdi` |
-| `win_shrink_px` | 窗口比屏幕少几像素（默认 1，**DXGI 抓屏的前提**，见上文第 7 条） |
+| `win_shrink_px` | 窗口比屏幕少几像素（默认 2，**DXGI 抓屏的前提**；200% 缩放下必须 ≥2，见上文第 7 条） |
 | `refresh_hz` | 抓屏刷新率（默认 30；DXGI 下建议 15~30，GDI 下建议 ≤3） |
 | `lock_at_close` | 合盖到底自动锁屏（默认关） |
 

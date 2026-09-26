@@ -7,7 +7,7 @@
   "glass_start": 0.05,
   "capture": "auto",
   "refresh_hz": 30,
-  "win_shrink_px": 1,
+  "win_shrink_px": 2,
   "max_tilt_deg": 60.0,
   "eye_dist_h": 2.0,
   "blur_spread": 0.42,

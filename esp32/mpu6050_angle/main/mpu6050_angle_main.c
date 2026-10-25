@@ -1,16 +1,21 @@
 /*
- * mpu6050_angle_main.c  v2
+ * mpu6050_angle_main.c  v3
  *
- * iPhone Duo「悬浮玻璃」效果 - 角度读取固件 (盛思乐动掌控1.0 + MPU6050)
+ * iPhone Duo「悬浮玻璃」效果 - 角度读取固件
+ *   支持两种板子 (按 idf.py set-target 自动切换引脚, 见下方"配置"):
+ *     - ESP32-S3 : YD-ESP32-S3 (N16R8)   SDA=GPIO8  SCL=GPIO9
+ *     - ESP32    : 盛思乐动掌控1.0/掌控板  SDA=GPIO23 SCL=GPIO22 (金手指 P19/P20)
  *
  * 启动流程（串口可见）:
- *   1. I2C 初始化 + WHO_AM_I 校验
+ *   1. I2C 初始化 + WHO_AM_I 校验 (未接线时每 2s 重试, 不崩溃)
  *   2. 陀螺仪零漂校准: 3 秒采样, 静止检测, 失败自动重试
  *   3. 100Hz 角度输出 (互补滤波, 陀螺仪零漂已扣除)
  *
- * 串口输出: COM3 115200, JSON 行 {"a":主角度,"b":副轴角度}
+ * 串口输出: 115200, JSON 行 {"a":主角度,"b":副轴角度}
  *   a = 主轴角度 (HINGE_AXIS 决定, 默认绕 Y 轴)
  *   b = 另一轴的角度 (仅调试用: 用于判断模块安装方向)
+ *   注意: ESP32-S3 用内置 USB-Serial-JTAG 输出(sdkconfig 已配), 插原生 USB 口即可;
+ *         掌控板走 UART0。
  *
  * 装贴建议: 让模块的 Y 轴(丝印 Y 方向)平行于笔记本转轴。
  * 如果掰动模块时 a 不变而 b 变 → 把 HINGE_AXIS 改为 AXIS_X 重新烧录。
@@ -27,10 +32,27 @@
 static const char *TAG = "mpu6050";
 
 /* ---------------- 配置 ---------------- */
+/* 板型相关: 按编译目标自动选 I2C 引脚, 换板子不用改代码。
+ * 打印出来的日志里会带上板名与引脚, 接线时照着日志接即可。 */
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+/* YD-ESP32-S3 (N16R8): 用左侧排针 GPIO8=SDA / GPIO9=SCL。
+ * 避开的脚: GPIO0(BOOT键) / 3,45,46(strapping) / 19,20(USB) /
+ *           43,44(UART0 控制台) / 48(板载 RGB) /
+ *           35~37(N16R8 的 8MB PSRAM 可能占用) / 26~34(内部 Flash/PSRAM, 未引出)。
+ * 备选组合: 4/5、17/18、47/21。 */
+#define BOARD_NAME      "ESP32-S3 (YD-ESP32-S3 N16R8)"
+#define I2C_SDA_IO      8
+#define I2C_SCL_IO      9
+#elif defined(CONFIG_IDF_TARGET_ESP32)
 /* 盛思乐动掌控1.0（主控=掌控板）：专用 I2C 接口 = 金手指 P19/P20
  * 官方固件 machine_pin.c: P19=SCL->GPIO22, P20=SDA->GPIO23 */
+#define BOARD_NAME      "ESP32 (乐动掌控1.0 / 掌控板)"
 #define I2C_SDA_IO      23
 #define I2C_SCL_IO      22
+#else
+#error "只适配了 esp32 / esp32s3, 换别的芯片请在这里补上它的 I2C 引脚"
+#endif
+
 #define I2C_FREQ_HZ     400000
 #define MPU_ADDR        0x68        // AD0 悬空/GND = 0x68
 
@@ -185,13 +207,14 @@ void app_main(void)
     /* 2. 传感器初始化 (未接线时每 2s 重试, 不崩溃) */
     esp_err_t err = mpu_init();
     while (err != ESP_OK) {
-        ESP_LOGE(TAG, "MPU6050 未就绪 (err=0x%x)。检查接线: VCC->VCC GND->GND "
-                      "SCL->掌控板SCL(GPIO22) SDA->掌控板SDA(GPIO23)，2 秒后重试...", err);
+        ESP_LOGE(TAG, "MPU6050 未就绪 (err=0x%x) [%s]。检查接线: VCC->3V3 GND->GND "
+                      "SCL->GPIO%d SDA->GPIO%d, 且 AD0 接 GND(地址 0x68), 2 秒后重试...",
+                 err, BOARD_NAME, I2C_SCL_IO, I2C_SDA_IO);
         vTaskDelay(pdMS_TO_TICKS(2000));
         err = mpu_init();
     }
-    ESP_LOGI(TAG, "MPU6050 初始化 OK (I2C: SDA=%d SCL=%d @%dkHz)",
-             I2C_SDA_IO, I2C_SCL_IO, I2C_FREQ_HZ / 1000);
+    ESP_LOGI(TAG, "MPU6050 初始化 OK [%s] (I2C: SDA=GPIO%d SCL=GPIO%d @%dkHz)",
+             BOARD_NAME, I2C_SDA_IO, I2C_SCL_IO, I2C_FREQ_HZ / 1000);
 
     /* 3. 陀螺仪零漂校准 */
     float off_gx, off_gy, off_gz;

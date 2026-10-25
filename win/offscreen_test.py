@@ -1,9 +1,11 @@
 """离屏验证 Duo 折叠着色器: 合成测试纹理 → 渲染 → 输出 PNG (无需窗口)
 用法: python offscreen_test.py [tilt_deg=60]
+着色器为 GLSL 330 core, 因此这里也用 core 上下文 + VAO/VBO (无立即模式)。
 """
+import ctypes
+import struct
 import sys
 
-import mss
 from PIL import Image, ImageDraw
 from PyQt6.QtGui import QSurfaceFormat, QOffscreenSurface, QOpenGLContext
 from PyQt6.QtOpenGL import QOpenGLShader, QOpenGLShaderProgram
@@ -35,7 +37,7 @@ def make_test_texture():
 def main():
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
-    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
     app = QApplication(sys.argv)
 
@@ -86,12 +88,24 @@ def main():
     GL.glUniform1f(prog.uniformLocation("uDark"), 0.001)
     GL.glUniform1i(prog.uniformLocation("uMaxTaps"), 32)
 
-    GL.glBegin(GL.GL_QUADS)
-    GL.glTexCoord2f(0, 0); GL.glVertex2f(-1, -1)
-    GL.glTexCoord2f(1, 0); GL.glVertex2f(1, -1)
-    GL.glTexCoord2f(1, 1); GL.glVertex2f(1, 1)
-    GL.glTexCoord2f(0, 1); GL.glVertex2f(-1, 1)
-    GL.glEnd()
+    # 全屏四边形 VAO/VBO (core profile 不能用立即模式)
+    verts = (-1.0, -1.0, 0.0, 0.0,
+              1.0, -1.0, 1.0, 0.0,
+              1.0,  1.0, 1.0, 1.0,
+             -1.0,  1.0, 0.0, 1.0)
+    vao = GL.glGenVertexArrays(1)
+    GL.glBindVertexArray(vao)
+    vbo = GL.glGenBuffers(1)
+    GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+    GL.glBufferData(GL.GL_ARRAY_BUFFER, 4 * len(verts),
+                    struct.pack(f"{len(verts)}f", *verts), GL.GL_STATIC_DRAW)
+    GL.glEnableVertexAttribArray(0)
+    GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, 16, ctypes.c_void_p(0))
+    GL.glEnableVertexAttribArray(1)
+    GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, GL.GL_FALSE, 16, ctypes.c_void_p(8))
+
+    GL.glDrawArrays(GL.GL_TRIANGLE_FAN, 0, 4)
+    GL.glBindVertexArray(0)
     GL.glFlush()
 
     data = GL.glReadPixels(0, 0, W, H, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)

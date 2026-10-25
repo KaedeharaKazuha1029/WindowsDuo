@@ -1,0 +1,12 @@
+# YD-ESP32-S3 (N16R8) target defaults.
+# Applied automatically after "idf.py set-target esp32s3".
+# Keep ASCII-only (kconfgen reads this with the system locale encoding).
+
+# Module is 16MB flash (N16 = 16MB flash, R8 = 8MB PSRAM).
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Console on the ESP32-S3 built-in USB-Serial-JTAG.
+# The board only exposes its native USB port (shows up as a COM port),
+# so printf()/ESP_LOG must go there to be visible on the PC.
+# With the default UART0 (GPIO43/44) console you would see nothing over USB.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

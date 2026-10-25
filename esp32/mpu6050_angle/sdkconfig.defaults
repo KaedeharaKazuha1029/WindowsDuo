@@ -1,0 +1,14 @@
+# Common defaults for all targets.
+#
+# WARNING: do NOT delete this file, even if it only contains comments.
+#   ESP-IDF loads sdkconfig.defaults.<target> ONLY when this base file exists
+#   (see IDF v5.3.1 tools/cmake/project.cmake lines 630-636). Without it the
+#   per-target files are silently ignored -- defaults appear to "not work".
+#
+# WARNING: keep this file ASCII-only (same as .bat files).
+#   kconfgen reads it with the system locale encoding (cp936/GBK on this PC),
+#   so UTF-8 comments raise UnicodeDecodeError and abort the configure step.
+#
+# Per-target settings:
+#   sdkconfig.defaults.esp32s3   YD-ESP32-S3 (N16R8): 16MB flash + USB-Serial-JTAG console
+#   sdkconfig.defaults.esp32     LOLIN/mPython controller board: 2MB flash + UART0 console

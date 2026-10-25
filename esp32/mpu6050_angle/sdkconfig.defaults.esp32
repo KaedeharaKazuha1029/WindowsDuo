@@ -1,0 +1,10 @@
+# mPython / LOLIN controller board (ESP32 D0WDQ6) target defaults.
+# Switch back to this board with: idf.py set-target esp32
+# Keep ASCII-only (kconfgen reads this with the system locale encoding).
+
+# Controller board has 2MB flash (kept from the original author's sdkconfig).
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
+
+# Console on UART0 @115200.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

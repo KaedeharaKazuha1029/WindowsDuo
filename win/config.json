@@ -1,9 +1,9 @@
 {
   "port": "auto",
   "baud": 115200,
-  "axis": "b",
-  "angle_closed": -36.7,
-  "angle_open": -74.2,
+  "axis": "a",
+  "angle_closed": 10.0,
+  "angle_open": -90.0,
   "glass_start": 0.1,
   "capture": "auto",
   "refresh_hz": 30,

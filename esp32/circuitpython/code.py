@@ -15,7 +15,7 @@ MPU6050 角度读取 · CircuitPython 版（YD-ESP32-S3 N16R8）
   INT/XDA/XCL 不接
 
 放到板子的 CIRCUITPY 盘根目录，文件名必须是 code.py（或 main.py）。
-Windows 端无需改动：JSON 格式、a/b 轴含义、标定值（axis=b / angle_open / angle_closed）都沿用。
+Windows 端无需改动：JSON 格式、a/b 轴含义、同一安装方式下的轴和两个标定值都沿用。
 """
 import math
 import time

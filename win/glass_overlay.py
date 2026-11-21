@@ -28,6 +28,8 @@ iPhone Duo「悬浮玻璃」· Windows 端 v3 (复刻着色器版)
 """
 import ctypes
 import json
+import math
+import re
 import struct
 import sys
 import threading
@@ -180,6 +182,25 @@ def is_auto(port):
     return port is None or str(port).strip().lower() in ("", "auto")
 
 
+SERIAL_PROBE_SECONDS = 7.0  # 固件启动后需要静止校准 3 秒
+ANGLE_FRAME = re.compile(rb"\{[^{}]*\}")
+
+
+def parse_angles(frame, axis):
+    try:
+        data = json.loads(frame)
+        main = data[axis]
+        other = data.get("b" if axis == "a" else "a", 0.0)
+        if isinstance(main, bool) or isinstance(other, bool):
+            return None
+        main, other = float(main), float(other)
+    except (ValueError, TypeError, KeyError, OverflowError, UnicodeDecodeError):
+        return None
+    if math.isfinite(main) and math.isfinite(other):
+        return main, other
+    return None
+
+
 class AngleReader(threading.Thread):
     """串口读角度。port='auto' 时自动枚举候选端口, 端口被占用/拔插都能自愈。"""
 
@@ -192,7 +213,8 @@ class AngleReader(threading.Thread):
         self.other = None
         self.fps = 0.0
         self.status = "connecting"
-        self._stop = False
+        self.stopping = threading.Event()
+        self.sample_ready = threading.Event()
 
     def get(self):
         with self.lock:
@@ -205,68 +227,64 @@ class AngleReader(threading.Thread):
         return candidate_ports()
 
     def run(self):
-        import re
-        pat = re.compile(r"\{[^}]*\}")
-        while not self._stop:
+        auto = is_auto(self.port)
+        while not self.stopping.is_set():
             ports = self._ports()
             if not ports:
-                self._set("未发现串口")
-                time.sleep(2)
+                self._clear("未发现串口")
+                self.stopping.wait(2)
                 continue
-
-            for p in ports:
-                if self._stop:
-                    break
+            for port in ports:
+                if self.stopping.is_set():
+                    return
                 try:
-                    self._read_loop(p, pat)
-                except (serial.SerialException, OSError) as e:
-                    self.active = None
-                    if is_auto(self.port):
-                        self._set(f"{p} 不可用")
-                    else:
-                        self._set(f"打不开 {p} ({type(e).__name__})")
-                    time.sleep(0.6 if is_auto(self.port) else 2)
-            if not self._stop and is_auto(self.port):
-                self._set("等待串口")
-                time.sleep(0.5)
+                    self._read_loop(port)
+                except (serial.SerialException, OSError) as exc:
+                    self._clear(f"{port} 不可用 ({type(exc).__name__})")
+                else:
+                    self._clear(f"{port} 未收到角度数据")
+            self.stopping.wait(0.5 if auto else 2)
 
-    def _read_loop(self, port, pat):
-        """打开 port 持续读角度; 直到停止或被拔出(抛 SerialException)。"""
-        with serial.Serial(port, self.baud, timeout=1) as ser:
-            self.active = port
-            self._set("connected " + port)
+    def _read_loop(self, port):
+        with serial.Serial(port, self.baud, timeout=0.25) as ser:
+            self._clear(f"探测 {port}")
+            start = time.monotonic()
+            deadline = start + SERIAL_PROBE_SECONDS
+            count = 0
             buf = b""
-            n, t0 = 0, time.time()
-            while not self._stop:
-                buf += ser.readline()
-                if b"}" not in buf:
-                    buf = buf[-64:] if len(buf) > 256 else buf
-                    continue
-                line, buf = buf.rsplit(b"}", 1)
-                line = (line + b"}").decode("ascii", "ignore")
-                m = pat.search(line)
-                if not m:
-                    continue
-                try:
-                    d = json.loads(m.group(0))
-                except ValueError:
-                    continue
-                with self.lock:
-                    # axis 决定用哪个轴当主轴(比如模块 X 轴平行转轴时用 "b"),
-                    # other 显示"另一个轴", 便于判断安装方向
-                    ax = CFG.get("axis", "a")
-                    self.angle = float(d[ax])
-                    self.other = float(d.get("b" if ax == "a" else "a", 0.0))
-                n += 1
-                now = time.time()
-                if now - t0 >= 1:
+            while not self.stopping.is_set():
+                buf += ser.read_until(size=256)
+                now = time.monotonic()
+                for match in ANGLE_FRAME.finditer(buf):
+                    sample = parse_angles(match.group(), CFG.get("axis", "a"))
+                    if sample is None:
+                        continue
+                    deadline = now + SERIAL_PROBE_SECONDS
+                    count += 1
                     with self.lock:
-                        self.fps = n / (now - t0)
-                    n, t0 = 0, now
+                        self.angle, self.other = sample
+                        self.active = port
+                        self.status = "connected " + port
+                        if now - start >= 1:
+                            self.fps = count / (now - start)
+                            count, start = 0, now
+                        self.sample_ready.set()
+                # 只留下最后一个未闭合的短帧，串口超时可能把一行截成两段。
+                tail = buf.rfind(b"{")
+                buf = buf[tail:] if tail > buf.rfind(b"}") and len(buf) - tail <= 256 else b""
+                if now >= deadline:
+                    if is_auto(self.port):
+                        return
+                    self._clear(f"等待 {port} 的角度数据")
+                    deadline = now + SERIAL_PROBE_SECONDS
+                    count, start = 0, now
 
-    def _set(self, s):
+    def _clear(self, status):
         with self.lock:
-            self.status = s
+            self.active = self.angle = self.other = None
+            self.fps = 0.0
+            self.status = status
+            self.sample_ready.clear()
 
 
 # ---------------------------------------------------------------- 键盘控制
@@ -333,7 +351,7 @@ class HoldControl:
 
 
 # ---------------------------------------------------------------- 截图线程
-def _open_dxgi(region):
+def _open_dxgi():
     """打开 DXGI Desktop Duplication (dxcam)。不可用时返回 None。
     实测: 新帧 60/s、单次约 6.6ms; 而 GDI(mss) 只有 30/s、33ms。"""
     try:
@@ -344,9 +362,6 @@ def _open_dxgi(region):
         cam = dxcam.create(output_color="BGRA")
         if cam is None:
             return None
-        cam.grab(region=(region["left"], region["top"],
-                         region["left"] + region["width"],
-                         region["top"] + region["height"]))
         return cam
     except Exception as e:  # noqa
         print("[capture] DXGI 初始化失败, 回退 GDI:", e)
@@ -378,12 +393,20 @@ class CaptureWorker(threading.Thread):
             return self.frame
 
     def kick(self):
-        if not self.busy:
-            self.request.set()
+        with self.lock:
+            if not self.busy:
+                self.done.clear()
+                self.busy = True
+                self.request.set()
+
+    def _finish_request(self):
+        with self.lock:
+            self.busy = False
+            self.done.set()
 
     # ---------- DXGI ----------
     def _run_dxgi(self):
-        cam = _open_dxgi(self.region)
+        cam = _open_dxgi()
         if cam is None:
             return False
         self.active = "dxgi"
@@ -397,8 +420,6 @@ class CaptureWorker(threading.Thread):
         while True:
             self.request.wait()
             self.request.clear()
-            self.done.clear()
-            self.busy = True
             try:
                 arr = cam.grab(region=reg)          # None = 没有新帧
                 if arr is not None:
@@ -416,24 +437,21 @@ class CaptureWorker(threading.Thread):
                         del cam
                     except Exception:  # noqa
                         pass
-                    return True          # 已经有帧了, 让上层决定是否回退
+                    return True          # 已初始化，但抓取持续失败
                 time.sleep(0.05)
             finally:
-                self.busy = False
-                self.done.set()
+                self._finish_request()
 
     # ---------- GDI ----------
     def _run_gdi(self):
         MSS = getattr(mss, "MSS", None) or mss.mss      # mss>=10 弃用了 mss.mss()
         self.active = "gdi"
         print(f"[capture] 使用 GDI (mss) {self.region['width']}x{self.region['height']}")
-        seq = 0
+        seq = self.grabs
         with MSS() as sct:
             while True:
                 self.request.wait()
                 self.request.clear()
-                self.done.clear()
-                self.busy = True
                 try:
                     shot = sct.grab(self.region)
                     raw = shot.raw                     # BGRA
@@ -444,17 +462,11 @@ class CaptureWorker(threading.Thread):
                 except Exception as e:  # noqa
                     print("[capture] error:", e)
                 finally:
-                    self.busy = False
-                    self.done.set()
+                    self._finish_request()
 
     def run(self):
         if self.backend in ("auto", "dxgi"):
-            if self._run_dxgi():
-                # DXGI 跑失败过 -> 回退 GDI (保留已有帧, 画面不至于卡住)
-                if self.backend == "auto":
-                    self._run_gdi()
-                return
-            if self.backend == "dxgi":
+            if not self._run_dxgi() and self.backend == "dxgi":
                 print("[capture] 指定了 dxgi 但初始化失败, 改用 GDI")
         self._run_gdi()
 
@@ -480,7 +492,7 @@ class GlassGLWidget(QOpenGLWidget):
         # hidden_refresh_hz=0 表示收起期间完全不抓屏(桌面回到原生帧率)。
         self.visible_eps = float(CFG.get("visible_eps", 0.005))
         self.hidden_refresh_hz = float(CFG.get("hidden_refresh_hz", 0))
-        self._ever_shown = False
+        self._wake_pending = False
         self.max_tilt = float(CFG.get("max_tilt_deg", 88.0)) * 3.14159265 / 180.0
         self.eye_h = float(CFG.get("eye_dist_h", 2.0))       # 眼距 = 屏高倍数
         self.spread = float(CFG.get("blur_spread", 0.55))
@@ -511,7 +523,6 @@ class GlassGLWidget(QOpenGLWidget):
         self.setWindowTitle("duo-glass")
 
     def showEvent(self, _ev):
-        self._ever_shown = True
         # 关键: 把自己从屏幕捕获中排除, 否则截图会抓到上一次的渲染结果,
         # 反馈几帧后收敛成一片纯色 ("白屏" 的根因之一)
         # --smoke 调试时设 _no_exclude=True, 便于抓屏验证渲染效果
@@ -644,18 +655,16 @@ class GlassGLWidget(QOpenGLWidget):
         GL.glDrawArrays(GL.GL_TRIANGLE_FAN, 0, 4)
         GL.glBindVertexArray(0)
 
-    def _fresh_frame(self):
-        """补抓一帧并等它到位(最多 0.25s), 让玻璃出现时显示的就是当下的画面。
-        收起期间不抓屏, 最后一帧可能已经很旧; 抓屏异常时也不会卡住不出现。"""
-        cur = self.capturer.latest()
-        seq0 = cur[3] if cur else -1
-        self.capturer.kick()
-        t0 = time.time()
-        while time.time() - t0 < 0.25:
-            f = self.capturer.latest()
-            if f and f[3] != seq0:
-                return
-            self.capturer.done.wait(timeout=0.02)
+    def _wake_ready(self):
+        """每个 Qt tick 检查抓屏结果。DXGI 完成但桌面未变时可复用旧帧。"""
+        if self._wake_pending and self.capturer.done.is_set():
+            self._wake_pending = False
+            if self.capturer.latest() is not None:
+                return True
+        if not self._wake_pending:
+            self.capturer.kick()
+            self._wake_pending = True
+        return False
 
     # ---------- 主循环 ----------
     def tick(self):
@@ -685,6 +694,7 @@ class GlassGLWidget(QOpenGLWidget):
         # 常显时桌面永远是一张按 refresh_hz 回放的截图(拖动/滚动都不跟手, 而且抓屏
         # 的 CPU 一直付着)。收起后桌面回到原生帧率, 只在开合过渡时才出现玻璃。
         if self.g <= self.visible_eps:
+            self._wake_pending = False
             if self.shown:
                 self.shown = False
                 self.hide()                 # 窗口不可见 -> paintGL 不再被触发
@@ -695,8 +705,8 @@ class GlassGLWidget(QOpenGLWidget):
                     self.capturer.kick()
         else:
             if not self.shown:
-                # 先补抓一帧"新的"截图, 避免抬起瞬间看到收起之前的旧画面
-                self._fresh_frame()
+                if not self._wake_ready():
+                    return
                 self.show()
                 self.shown = True
                 self._last_kick = time.time()
@@ -724,8 +734,10 @@ class GlassGLWidget(QOpenGLWidget):
             self._last_print = time.time()
             tag = "" if self.shown else " [收起]"
             if self.reader is not None:
-                a = angle if angle is not None else float("nan")
-                print(f"\r[{mode}] a={a:7.2f}° b={(other if other is not None else 0):7.2f}° "
+                a, b = (angle, other) if CFG.get("axis", "a") == "a" else (other, angle)
+                a = float("nan") if a is None else a
+                b = float("nan") if b is None else b
+                print(f"\r[{mode}] a={a:7.2f}° b={b:7.2f}° "
                       f"浓度={self.g*100:5.1f}%{tag}  [{status} {fps:3.0f}Hz] "
                       f"↑↓调节 r=切自动 Esc退出 ", end="", flush=True)
             else:
@@ -802,11 +814,18 @@ def main():
     print("=" * 60)
 
     if selftest:
-        time.sleep(4)
+        if reader:
+            nports = len(reader._ports())
+            reader.sample_ready.wait((SERIAL_PROBE_SECONDS + 1) * max(1, nports))
         angle, other, fps, st = reader.get() if reader else (None, None, 0.0, "manual")
-        capturer.kick()
-        capturer.done.wait(timeout=3)
+        deadline = time.monotonic() + 3
         frame = capturer.latest()
+        while frame is None and time.monotonic() < deadline:
+            capturer.kick()
+            capturer.done.wait(timeout=max(0, deadline - time.monotonic()))
+            frame = capturer.latest()
+            if frame is None:
+                time.sleep(0.02)
         ser_ok = manual or angle is not None
         ok = (frame is not None) and ser_ok
         print(f"[自检] 串口: {st} angle={angle} fps={fps:.0f} | "

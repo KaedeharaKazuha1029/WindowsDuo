@@ -13,7 +13,7 @@ ESP32 / ESP32-S3 · ESP-IDF v5.x · 100Hz 串口输出 `{"a":主角度,"b":副�
 >            检查接线: VCC->3V3 GND->GND SCL->GPIO9 SDA->GPIO8, 且 AD0 接 GND(地址 0x68), 2 秒后重试...
 >   ```
 >   这条日志同时证实了：目标芯片、Flash 内容、启动流程、USB 日志通路、I2C 出错分支全部正常。
-> - ❌ **传感器本体仍未验证**：MPU6050 还没到货，接线、`WHO_AM_I=0x68`、零漂校准、100Hz 输出稳定性、角度标定都没实测。
+> - 投稿者随后在 `WHO_AM_I=0x70` 的模块上完成了校准与端到端测试，见[主 README 的实测记录](../../README.md#测试情况)。
 > - 原 README 里"已编译并烧录至 COM3 ✅、实测 100Hz 稳定输出"是**原作者在他自己机器 + 掌控板**上的结果。
 
 > 注：本机实测的芯片信息为 `ESP32-S3 (QFN56) (revision v0.2)`、`Embedded PSRAM 8MB`、Flash 16MB（quad，3.3V）。
@@ -64,14 +64,16 @@ GPIO48(板载 RGB)、GPIO35~37(N16R8 的 8MB PSRAM 可能占用)、GPIO26~34(内
 
 ```bat
 cd /d <本仓库>\esp32\mpu6050_angle
-build.bat                       :: 只编译
-build.bat -p COM5 flash monitor :: 烧录 + 看日志
-build.bat set-target esp32s3    :: 换目标芯片
+REM First build or board change: use esp32 for the original controller.
+build.bat set-target esp32s3
+build.bat
+build.bat -p COM5 flash monitor
 ```
 
 **B. 直接调 `run_build.py`**（内部会设好 IDF_PATH/PATH 再执行 idf.py，规避本机 shell 不透传 IDF 环境的问题）
 
 ```bat
+D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py set-target esp32s3
 D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py build
 D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py -p COM5 flash monitor
 ```
@@ -117,7 +119,6 @@ D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py -p COM
 |---|---|
 | `prebuilt/WindowsDuo-esp32s3-n16r8.bin` | **合并镜像**：bootloader@0x0 + 分区表@0x8000 + 应用@0x10000，288,944 字节，烧到 **0x0** 即可 |
 | `prebuilt/flash_prebuilt.bat` | 一键烧录脚本（自动找带 esptool 的解释器；纯 ASCII + CRLF） |
-| `prebuilt/raw/*.bin` | 分开的三个镜像，排障或只想重烧某一段时用（地址 0x0 / 0x8000 / 0x10000） |
 
 步骤（**两步按键都不能少**）：
 
@@ -132,13 +133,14 @@ D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py -p COM
 
 ```bat
 cd esp32\mpu6050_angle
+build.bat set-target esp32s3
 build.bat
 cd build
-esptool --chip esp32s3 merge_bin -o WindowsDuo-esp32s3-n16r8.bin --flash_mode dio --flash_freq 80m --flash_size 16MB ^
+esptool --chip esp32s3 merge_bin -o ..\prebuilt\WindowsDuo-esp32s3-n16r8.bin --flash_mode dio --flash_freq 80m --flash_size 16MB ^
         0x0 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 mpu6050_angle.bin
 ```
 
-（合并镜像的三个切片与源镜像逐字节一致，已用 SHA256 校验过。）
+此版合并镜像的 SHA-256 为 `d4d475d29c913590d38533553b5d17f3d4eddddb37e1fa974a92f5f2fe6cbb0f`。三个分片可从本地 IDF 构建目录取得，对应偏移见上面的命令。
 
 **换板子要注意的三件事**：
 
@@ -188,9 +190,7 @@ I (xxx) mpu6050: 开始输出角度 @100Hz: {"a":主角度,"b":副轴角度}
 2. **这些文件必须纯 ASCII**。kconfgen 用系统 locale 编码读它们（本机是 GBK），
    UTF-8 的中文注释会让配置阶段直接 `UnicodeDecodeError` 中断。跟 `.bat` 的要求一样。
 
-另外：`idf.py set-target` 只改变"尚未设置"的项——如果 `sdkconfig` 里已有旧值（例如从上一次
-`esp32` 配置带过来的 `CONFIG_ESPTOOLPY_FLASHSIZE_2MB`），defaults 不会覆盖它。换板子时
-稳妥做法是删掉 `sdkconfig` 再 `set-target`。
+首次构建或换板时运行 `build.bat set-target esp32s3` 或 `build.bat set-target esp32`。本地生成的 `sdkconfig` 已加入 Git 忽略列表，板级默认值保存在对应的 `sdkconfig.defaults.<target>`。
 
 ## 八、这个目标的 sdkconfig 设置（`sdkconfig.defaults.esp32s3`）
 

@@ -11,15 +11,16 @@ REM    build.bat set-target esp32s3
 REM ============================================================
 setlocal
 
+if not defined ESP_ROOT set "ESP_ROOT=D:\Espressif"
 set "PYEXE="
-for /f "delims=" %%F in ('dir /b /s /o-n "D:\Espressif\python_env\idf*_env\Scripts\python.exe" 2^>nul') do (
-    if not defined PYEXE set "PYEXE=%%F"
+if defined IDF_PYTHON_ENV_PATH if exist "%IDF_PYTHON_ENV_PATH%\Scripts\python.exe" set "PYEXE=%IDF_PYTHON_ENV_PATH%\Scripts\python.exe"
+if not defined PYEXE for /f "delims=" %%D in ('dir /b /ad /o-n "%ESP_ROOT%\python_env\idf*_env" 2^>nul') do (
+    if not defined PYEXE if exist "%ESP_ROOT%\python_env\%%D\Scripts\python.exe" set "PYEXE=%ESP_ROOT%\python_env\%%D\Scripts\python.exe"
 )
 
 if not defined PYEXE (
-    echo [ERROR] ESP-IDF python env not found:
-    echo         D:\Espressif\python_env\idf*_env\Scripts\python.exe
-    echo         Install ESP-IDF first: https://dl.espressif.com/dl/esp-idf/
+    echo [ERROR] ESP-IDF Python environment not found under "%ESP_ROOT%".
+    echo         Set ESP_ROOT or open the ESP-IDF command prompt.
     pause
     exit /b 1
 )

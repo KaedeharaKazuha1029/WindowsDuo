@@ -12,6 +12,7 @@
 """
 import glob
 import os
+import re
 import runpy
 import sys
 
@@ -38,23 +39,27 @@ def pick(pattern, *sub, newest=True):
 
 
 def main():
-    if not os.path.isdir(ESP_ROOT):
+    if not os.path.isdir(ESP_ROOT) and not os.environ.get("IDF_PATH"):
         print(f"[ERROR] 没找到 ESP-IDF 安装目录: {ESP_ROOT}")
         print("        先装 ESP-IDF (Windows 安装器)，或用 ESP_ROOT 环境变量指定位置。")
         return 2
 
-    idf_path = pick(os.path.join(ESP_ROOT, "frameworks", "esp-idf-v*"))
+    py_env = sys.prefix
+    idf_path = os.environ.get("IDF_PATH")
     if not idf_path:
-        print(f"[ERROR] {ESP_ROOT}\\frameworks 下没有 esp-idf-v*，请先安装 ESP-IDF。")
+        version = re.match(r"idf(\d+\.\d+)_", os.path.basename(py_env))
+        framework_dir = os.path.join(ESP_ROOT, "frameworks")
+        if version:
+            prefix = os.path.join(framework_dir, "esp-idf-v" + version.group(1))
+            idf_path = pick(prefix + ".*") or pick(prefix)
+        else:
+            idf_path = pick(os.path.join(framework_dir, "esp-idf-v*"))
+    if not idf_path or not os.path.isfile(os.path.join(idf_path, "tools", "idf.py")):
+        print(f"[ERROR] 未找到与 {py_env} 配套的 ESP-IDF，请设置 IDF_PATH。")
         return 2
 
-    py_env = pick(os.path.join(ESP_ROOT, "python_env", "idf*_env"))
-    if not py_env:
-        print(f"[WARN] 没找到 {ESP_ROOT}\\python_env\\idf*_env，"
-              f"idf.py 可能缺少依赖（建议用 IDF 自带解释器运行本脚本）。")
-
     tools = [
-        os.path.join(py_env, "Scripts") if py_env else None,
+        os.path.join(py_env, "Scripts"),
         pick(os.path.join(ESP_ROOT, r"tools\xtensa-esp-elf\*\xtensa-esp-elf\bin")),
         pick(os.path.join(ESP_ROOT, r"tools\riscv32-esp-elf\*\riscv32-esp-elf\bin")),
         pick(os.path.join(ESP_ROOT, r"tools\cmake\*\bin")),
@@ -66,8 +71,7 @@ def main():
     ]
 
     os.environ["IDF_PATH"] = idf_path
-    if py_env:
-        os.environ["IDF_PYTHON_ENV_PATH"] = py_env
+    os.environ["IDF_PYTHON_ENV_PATH"] = py_env
 
     rom_elf = pick(os.path.join(ESP_ROOT, r"tools\esp-rom-elfs\*"))
     if rom_elf:
@@ -81,11 +85,11 @@ def main():
     os.environ["PATH"] = ";".join(t for t in tools if t) + ";" + os.environ.get("PATH", "")
 
     print(f"[env] IDF      : {idf_path}")
-    print(f"[env] python   : {py_env or '(当前解释器)'}")
+    print(f"[env] python   : {py_env}")
     print(f"[env] project  : {PROJ}")
     os.chdir(PROJ)
 
-    sys.argv = ["idf.py"] + sys.argv[1:]
+    sys.argv = ["idf.py"] + (sys.argv[1:] or ["build"])
     sys.path.insert(0, os.path.join(idf_path, "tools"))
     runpy.run_path(os.path.join(idf_path, "tools", "idf.py"), run_name="__main__")
     return 0

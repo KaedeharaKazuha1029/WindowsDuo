@@ -29,6 +29,7 @@ win/
   ```
   python esp32/mpu6050_angle/run_build.py -p COM3 flash
   ```
+- 首次构建或换板先选择目标：原掌控板用 `esp32`，YD-ESP32-S3 用 `esp32s3`。
 - ESP32 = COM3 (CH9102)。烧录前确认串口没被 debug_view 等程序占用，否则报 PermissionError。
 - I2C 引脚是掌控板（盛思乐动）专用口：P19=SCL→GPIO22，P20=SDA→GPIO23（**不是** 21/22）。
 
@@ -40,10 +41,10 @@ win/
 ## 已知坑（改代码前必读）
 
 1. **GL 窗口必须继承 `QOpenGLWidget`**（`PyQt6.QtOpenGLWidgets`）。继承普通 `QWidget` 时 `initializeGL/paintGL` 永远不会被调用，窗口只会显示默认底色（白屏）——这是本项目最大的历史 bug。
-2. PyQt6 6.11 枚举名：`QOpenGLShader.ShaderTypeBit.Vertex`（不是 `ShaderType.Vertex`）；`QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile`。
+2. PyQt6 6.11 枚举名：`QOpenGLShader.ShaderTypeBit.Vertex`（不是 `ShaderType.Vertex`）；`QSurfaceFormat.OpenGLContextProfile.CoreProfile`。
 3. **截图反馈污染**：Overlay 是不透明置顶窗口，mss 截屏会抓到自己上一帧，几帧后收敛成纯色。靠 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE=0x11)` 把自己排除出捕获（见 `showEvent`）。改截图逻辑时别动它。
 4. **`.bat` 文件里禁止中文**：cmd 按 GBK 解码会乱码并把乱码当命令执行。bat 只写 ASCII。
-5. GLSL 需要 `#version 330 compatibility` + Qt 请求 3.3 Compat profile（`textureLod` 依赖 3.3）。
+5. Windows 的着色器使用 `#version 330 core`，Qt 请求 3.3 Core profile，绘制使用 VAO/VBO。
 6. 调着色器先用 `offscreen_test.py` 离屏出图验证，再上真窗口；`--smoke` 用 `grabFramebuffer()` 抓帧（不要用整屏截图验证 GL 内容）。
 7. config.json 是唯一参数入口（`blur_spread` 模糊、`darkening` 变暗、`angle_closed/angle_open` 角度映射等），不要在代码里硬编码覆盖它。
 

@@ -12,3 +12,6 @@ dbg*.txt
 *_exit.txt
 win/smoke_frame.png
 win/smoke_grab.png
+
+# ESP-IDF 自动生成的机器配置（每台机器 / 每个 IDF 版本都不同，不提交）
+esp32/mpu6050_angle/sdkconfig

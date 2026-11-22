@@ -16,11 +16,21 @@ iPhone Duo「悬浮玻璃」· Windows 端 v3 (复刻着色器版)
   - AngleReader   : 串口 100Hz 读 {"a":..,"b":..}   (--manual 可脱离串口)
   - CaptureWorker : mss 截屏原始帧
   - GL 主线程     : 上传纹理(带 mipmap) → 单 pass Duo 折叠着色器
+
+着色器为 GLSL 330 **core** (显式属性 + VAO/VBO)。旧的 330 compatibility 写法
+(varying / gl_Vertex / fragColor) 在 Intel Windows 驱动上会被拒
+("not available in current GLSL version"), 因为 Intel 的兼容模式只到 GLSL 1.20。
+
 用法:
   run_overlay.bat   串口驱动 | run_manual.bat   键盘手动 (↑↓←→)
+  --port COM5       手动指定串口 (默认 auto: 自动挑选 Espressif/CH340/CP210x)
   --selftest 无窗口自检 | --smoke 4s 全屏演示自退
 """
+import ctypes
 import json
+import math
+import re
+import struct
 import sys
 import threading
 import time
@@ -38,16 +48,26 @@ from PyQt6.QtWidgets import QApplication
 CFG_PATH = Path(__file__).with_name("config.json")
 CFG = json.loads(CFG_PATH.read_text("utf-8"))
 
-VS = """#version 330 compatibility
-varying vec2 vUV;
+# 中文控制台多为 GBK(cp936): 遇到编码不了的字符只替换, 不要让 print 抛 UnicodeEncodeError
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:  # noqa
+        pass
+
+# 顶点着色器: GLSL 330 core, 属性位置与 _draw_quad 的 VAO 布局一致
+VS = """#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aUV;
+out vec2 vUV;
 void main() {
-    vUV = gl_MultiTexCoord0.xy;
-    gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+    vUV = aUV;
+    gl_Position = vec4(aPos, 0.0, 1.0);
 }
 """
 
 # Duo 折叠着色器: 逆投影 + Vogel 盘模糊 + mip LOD + 边缘覆盖率
-FS_DUO = """#version 330 compatibility
+FS_DUO = """#version 330 core
 uniform sampler2D uTex;
 uniform vec2  uRes;      // 截图尺寸 px
 uniform float uTilt;     // 玻璃转角 (弧度), 0 = 贴合界面
@@ -55,7 +75,8 @@ uniform float uEyeZ;     // 眼睛到界面平面距离 px
 uniform float uSpread;   // 单位间隙 → 模糊半径 (散射半角正切)
 uniform float uDark;     // 单位模糊半径损失的光量
 uniform int   uMaxTaps;
-varying vec2 vUV;
+in vec2 vUV;
+out vec4 fragColor;
 
 const float GOLDEN = 2.39996322972865332;
 const float TWO_PI = 6.28318530717958648;
@@ -71,7 +92,7 @@ void main() {
     vec2 uvFlat = vec2(vUV.x, 1.0 - vUV.y);   // 平视采样 (截图行序 top-first)
 
     if (tilt < 1e-5) {
-        gl_FragColor = vec4(texture(uTex, uvFlat).rgb, 1.0);
+        fragColor = vec4(texture(uTex, uvFlat).rgb, 1.0);
         return;
     }
 
@@ -82,7 +103,7 @@ void main() {
 
     // 光线 eye -> glass 像素, 延长交到界面平面 z=0
     float depth = eye.z - glass.z;
-    if (depth <= 1e-3) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    if (depth <= 1e-3) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
     float t   = eye.z / depth;
     vec2 hit  = eye.xy + (glass.xy - eye.xy) * t;     // 界面平面上的落点 (px, y 向上)
 
@@ -93,7 +114,7 @@ void main() {
     // 整个模糊核都在界面之外 → 黑
     if (hit.x < -radius || hit.x > uRes.x + radius ||
         hit.y < -radius || hit.y > uRes.y + radius) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return;
+        fragColor = vec4(0.0, 0.0, 0.0, 1.0); return;
     }
 
     // 磨砂玻璃吸光: 与散射成正比地变暗 (iphone-duo / DuoLike 同款)
@@ -102,7 +123,7 @@ void main() {
     vec2 uvHit = vec2(hit.x / uRes.x, 1.0 - hit.y / uRes.y);
 
     if (radius < 0.5) {
-        gl_FragColor = vec4(textureLod(uTex, uvHit, 0.0).rgb * att, 1.0);
+        fragColor = vec4(textureLod(uTex, uvHit, 0.0).rgb * att, 1.0);
         return;
     }
 
@@ -129,66 +150,141 @@ void main() {
         sum += textureLod(uTex, uv, lod).rgb * cx * cy;
     }
     vec3 c = sum / float(taps) * att;
-    gl_FragColor = vec4(c, 1.0);
+    fragColor = vec4(c, 1.0);
 }
 """
 
 
 # ---------------------------------------------------------------- 串口线程
+def candidate_ports():
+    """按"最可能是本项目那块板"排序的可用串口列表。
+    优先级: Espressif 原生 USB(303A) > CH340(1A86) > CP210x(10C4) > 其它。"""
+    from serial.tools import list_ports
+    try:
+        ports = list(list_ports.comports())
+    except Exception:  # noqa
+        return []
+
+    def rank(p):
+        hw = (p.hwid or "").upper()
+        if "303A" in hw:
+            return 0
+        if "1A86" in hw:
+            return 1
+        if "10C4" in hw:
+            return 2
+        return 3
+
+    return [p.device for p in sorted(ports, key=rank)]
+
+
+def is_auto(port):
+    return port is None or str(port).strip().lower() in ("", "auto")
+
+
+SERIAL_PROBE_SECONDS = 7.0  # 固件启动后需要静止校准 3 秒
+ANGLE_FRAME = re.compile(rb"\{[^{}]*\}")
+
+
+def parse_angles(frame, axis):
+    try:
+        data = json.loads(frame)
+        main = data[axis]
+        other = data.get("b" if axis == "a" else "a", 0.0)
+        if isinstance(main, bool) or isinstance(other, bool):
+            return None
+        main, other = float(main), float(other)
+    except (ValueError, TypeError, KeyError, OverflowError, UnicodeDecodeError):
+        return None
+    if math.isfinite(main) and math.isfinite(other):
+        return main, other
+    return None
+
+
 class AngleReader(threading.Thread):
+    """串口读角度。port='auto' 时自动枚举候选端口, 端口被占用/拔插都能自愈。"""
+
     def __init__(self, port, baud):
         super().__init__(daemon=True)
         self.port, self.baud = port, baud
+        self.active = None            # 当前实际连接的端口
         self.lock = threading.Lock()
         self.angle = None
         self.other = None
         self.fps = 0.0
         self.status = "connecting"
-        self._stop = False
+        self.stopping = threading.Event()
+        self.sample_ready = threading.Event()
 
     def get(self):
         with self.lock:
             return self.angle, self.other, self.fps, self.status
 
-    def run(self):
-        import re
-        pat = re.compile(r"\{[^}]*\}")
-        n, t0 = 0, time.time()
-        while not self._stop:
-            try:
-                with serial.Serial(self.port, self.baud, timeout=1) as ser:
-                    self._set("connected")
-                    buf = b""
-                    while not self._stop:
-                        buf += ser.readline()
-                        if b"}" not in buf:
-                            buf = buf[-64:] if len(buf) > 256 else buf
-                            continue
-                        line, buf = buf.rsplit(b"}", 1)
-                        line = (line + b"}").decode("ascii", "ignore")
-                        m = pat.search(line)
-                        if not m:
-                            continue
-                        try:
-                            d = json.loads(m.group(0))
-                        except ValueError:
-                            continue
-                        with self.lock:
-                            self.angle = float(d[CFG.get("axis", "a")])
-                            self.other = float(d.get("b", 0.0))
-                        n += 1
-                        now = time.time()
-                        if now - t0 >= 1:
-                            with self.lock:
-                                self.fps = n / (now - t0)
-                            n, t0 = 0, now
-            except (serial.SerialException, OSError):
-                self._set("waiting " + self.port)
-                time.sleep(2)
+    def _ports(self):
+        """本次尝试要依次打开的端口列表。"""
+        if not is_auto(self.port):
+            return [str(self.port)]
+        return candidate_ports()
 
-    def _set(self, s):
+    def run(self):
+        auto = is_auto(self.port)
+        while not self.stopping.is_set():
+            ports = self._ports()
+            if not ports:
+                self._clear("未发现串口")
+                self.stopping.wait(2)
+                continue
+            for port in ports:
+                if self.stopping.is_set():
+                    return
+                try:
+                    self._read_loop(port)
+                except (serial.SerialException, OSError) as exc:
+                    self._clear(f"{port} 不可用 ({type(exc).__name__})")
+                else:
+                    self._clear(f"{port} 未收到角度数据")
+            self.stopping.wait(0.5 if auto else 2)
+
+    def _read_loop(self, port):
+        with serial.Serial(port, self.baud, timeout=0.25) as ser:
+            self._clear(f"探测 {port}")
+            start = time.monotonic()
+            deadline = start + SERIAL_PROBE_SECONDS
+            count = 0
+            buf = b""
+            while not self.stopping.is_set():
+                buf += ser.read_until(size=256)
+                now = time.monotonic()
+                for match in ANGLE_FRAME.finditer(buf):
+                    sample = parse_angles(match.group(), CFG.get("axis", "a"))
+                    if sample is None:
+                        continue
+                    deadline = now + SERIAL_PROBE_SECONDS
+                    count += 1
+                    with self.lock:
+                        self.angle, self.other = sample
+                        self.active = port
+                        self.status = "connected " + port
+                        if now - start >= 1:
+                            self.fps = count / (now - start)
+                            count, start = 0, now
+                        self.sample_ready.set()
+                # 只留下最后一个未闭合的短帧，串口超时可能把一行截成两段。
+                tail = buf.rfind(b"{")
+                buf = buf[tail:] if tail > buf.rfind(b"}") and len(buf) - tail <= 256 else b""
+                if now >= deadline:
+                    if is_auto(self.port):
+                        return
+                    self._clear(f"等待 {port} 的角度数据")
+                    deadline = now + SERIAL_PROBE_SECONDS
+                    count, start = 0, now
+
+    def _clear(self, status):
         with self.lock:
-            self.status = s
+            self.active = self.angle = self.other = None
+            self.fps = 0.0
+            self.status = status
+            self.sample_ready.clear()
 
 
 # ---------------------------------------------------------------- 键盘控制
@@ -232,48 +328,147 @@ class ManualControl(threading.Thread):
             if delta is not None:
                 with self.lock:
                     self.auto = False       # 任何调节键都切回手动覆盖
-                    self.target = max(0.0, min(1.0, self.target + delta if abs(delta) < 0.5 else delta))
+                    if abs(delta) >= 0.5:               # →/d: 直接拉满
+                        self.target = max(0.0, min(1.0, delta))
+                    elif delta == 0.0:                  # ←/a: 清零
+                        # 注意: 不能写成 target + delta, 那样加 0 等于"没有反应"
+                        self.target = 0.0
+                    else:                               # ↑↓/w/s: 在当前值上微调
+                        self.target = max(0.0, min(1.0, self.target + delta))
                     self.last_key = key
 
 
+class HoldControl:
+    """固定浓度 (--smoke 无头演示用): 不读键盘, 浓度保持不变, 否则会被键盘目标值拉回 0。"""
+
+    quit_flag = False
+
+    def __init__(self, value):
+        self.value = float(value)
+
+    def get(self):
+        return self.value, "hold", False
+
+
 # ---------------------------------------------------------------- 截图线程
+def _open_dxgi():
+    """打开 DXGI Desktop Duplication (dxcam)。不可用时返回 None。
+    实测: 新帧 60/s、单次约 6.6ms; 而 GDI(mss) 只有 30/s、33ms。"""
+    try:
+        import dxcam
+    except ImportError:
+        return None
+    try:
+        cam = dxcam.create(output_color="BGRA")
+        if cam is None:
+            return None
+        return cam
+    except Exception as e:  # noqa
+        print("[capture] DXGI 初始化失败, 回退 GDI:", e)
+        return None
+
+
 class CaptureWorker(threading.Thread):
-    def __init__(self, region):
+    """抓屏线程。capture='auto' 时优先 DXGI(dxcam), 失败自动回退 mss(GDI)。
+
+    注意: 满屏窗口会被 Windows 走"全屏直通"呈现, DXGI 会把它整块抓成纯黑
+    (GDI 则是看不到它)。所以 Overlay 窗口要比屏幕少 1px (见 config.win_shrink_px),
+    这样 DXGI 才能抓到背后真正的桌面。
+    """
+
+    def __init__(self, region, backend="auto"):
         super().__init__(daemon=True)
         self.region = region
+        self.backend = backend          # auto | dxgi | gdi
+        self.active = "none"
         self.request = threading.Event()
         self.done = threading.Event()
         self.lock = threading.Lock()
         self.frame = None          # (bytes, w, h, seq)
         self.busy = False
+        self.grabs = 0
 
     def latest(self):
         with self.lock:
             return self.frame
 
     def kick(self):
-        if not self.busy:
-            self.request.set()
+        with self.lock:
+            if not self.busy:
+                self.done.clear()
+                self.busy = True
+                self.request.set()
 
-    def run(self):
+    def _finish_request(self):
+        with self.lock:
+            self.busy = False
+            self.done.set()
+
+    # ---------- DXGI ----------
+    def _run_dxgi(self):
+        cam = _open_dxgi()
+        if cam is None:
+            return False
+        self.active = "dxgi"
+        print(f"[capture] 使用 DXGI Desktop Duplication "
+              f"({self.region['width']}x{self.region['height']})")
         seq = 0
-        with mss.mss() as sct:
+        fails = 0
+        reg = (self.region["left"], self.region["top"],
+               self.region["left"] + self.region["width"],
+               self.region["top"] + self.region["height"])
+        while True:
+            self.request.wait()
+            self.request.clear()
+            try:
+                arr = cam.grab(region=reg)          # None = 没有新帧
+                if arr is not None:
+                    seq += 1
+                    h, w = arr.shape[0], arr.shape[1]
+                    with self.lock:
+                        self.frame = (arr.tobytes(), w, h, seq)
+                    self.grabs = seq
+                fails = 0
+            except Exception as e:  # noqa
+                fails += 1
+                if fails >= 5:
+                    print("[capture] DXGI 连续失败, 回退 GDI:", e)
+                    try:
+                        del cam
+                    except Exception:  # noqa
+                        pass
+                    return True          # 已初始化，但抓取持续失败
+                time.sleep(0.05)
+            finally:
+                self._finish_request()
+
+    # ---------- GDI ----------
+    def _run_gdi(self):
+        MSS = getattr(mss, "MSS", None) or mss.mss      # mss>=10 弃用了 mss.mss()
+        self.active = "gdi"
+        print(f"[capture] 使用 GDI (mss) {self.region['width']}x{self.region['height']}")
+        seq = self.grabs
+        with MSS() as sct:
             while True:
                 self.request.wait()
                 self.request.clear()
-                self.done.clear()
-                self.busy = True
                 try:
                     shot = sct.grab(self.region)
                     raw = shot.raw                     # BGRA
                     seq += 1
                     with self.lock:
                         self.frame = (raw, shot.width, shot.height, seq)
+                    self.grabs = seq
                 except Exception as e:  # noqa
                     print("[capture] error:", e)
                 finally:
-                    self.busy = False
-                    self.done.set()
+                    self._finish_request()
+
+    def run(self):
+        if self.backend in ("auto", "dxgi"):
+            if not self._run_dxgi() and self.backend == "dxgi":
+                print("[capture] 指定了 dxgi 但初始化失败, 改用 GDI")
+        self._run_gdi()
 
 
 # ---------------------------------------------------------------- GL 窗口
@@ -293,11 +488,19 @@ class GlassGLWidget(QOpenGLWidget):
         self.angle_open = float(CFG["angle_open"])
         self.glass_start = float(CFG.get("glass_start", 0.05))
         self.refresh_hz = float(CFG.get("refresh_hz", 3))
+        # 按需显示: 浓度 ≤ visible_eps 时把窗口 hide() 掉, 同时停掉抓屏与重绘。
+        # hidden_refresh_hz=0 表示收起期间完全不抓屏(桌面回到原生帧率)。
+        self.visible_eps = float(CFG.get("visible_eps", 0.005))
+        self.hidden_refresh_hz = float(CFG.get("hidden_refresh_hz", 0))
+        self._wake_pending = False
         self.max_tilt = float(CFG.get("max_tilt_deg", 88.0)) * 3.14159265 / 180.0
         self.eye_h = float(CFG.get("eye_dist_h", 2.0))       # 眼距 = 屏高倍数
         self.spread = float(CFG.get("blur_spread", 0.55))
         self.dark = float(CFG.get("darkening", 0.001))
         self.max_taps = int(CFG.get("max_taps", 32))
+        # 周期性重申"置顶"的频率 (Hz): 任务栏也是 topmost, 点它会压到我们上面(见 tick)
+        self.keep_on_top_hz = float(CFG.get("keep_on_top_hz", 2))
+        self._last_topmost = 0.0
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -306,39 +509,89 @@ class GlassGLWidget(QOpenGLWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setGeometry(screen.geometry())
+        # 窗口比屏幕少 1 像素(默认少最底下一行): 满屏窗口会被 Windows 走"全屏直通"
+        # 呈现, DXGI 抓屏会把整块抓成纯黑; 少 1px 就回到普通合成路径, 抓屏正常。
+        # 少掉的那一行在屏幕最底部(= 铰链处, 本来就接近清晰), 视觉上看不出来。
+        shrink = int(CFG.get("win_shrink_px", 1))
+        g = screen.geometry()
+        dpr = screen.devicePixelRatio()
+        if shrink > 0:
+            h = max(1, int(round((g.height() * dpr - shrink) / dpr)))
+            self.setGeometry(g.x(), g.y(), g.width(), h)
+        else:
+            self.setGeometry(g)
         self.setWindowTitle("duo-glass")
 
     def showEvent(self, _ev):
         # 关键: 把自己从屏幕捕获中排除, 否则截图会抓到上一次的渲染结果,
         # 反馈几帧后收敛成一片纯色 ("白屏" 的根因之一)
         # --smoke 调试时设 _no_exclude=True, 便于抓屏验证渲染效果
-        if getattr(self, "_no_exclude", False):
-            return
-        try:
-            import ctypes
-            WDA_EXCLUDEFROMCAPTURE = 0x11
-            r = ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()),
-                                                              WDA_EXCLUDEFROMCAPTURE)
-            if not r:
-                print("[警告] SetWindowDisplayAffinity 失败, 截图可能包含自身")
-        except Exception as e:  # noqa
-            print("[警告] 显示排除设置异常:", e)
+        if not getattr(self, "_no_exclude", False):
+            try:
+                WDA_EXCLUDEFROMCAPTURE = 0x11
+                r = ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()),
+                                                                  WDA_EXCLUDEFROMCAPTURE)
+                if not r:
+                    print("[警告] SetWindowDisplayAffinity 失败, 截图可能包含自身")
+            except Exception as e:  # noqa
+                print("[警告] 显示排除设置异常:", e)
 
+        # 主循环定时器只建一次: 按需显示会反复 hide()/show(), 每次 showEvent
+        # 都新建一个 QTimer 会让 tick 被重复调用(旧定时器并不会自己停)。
+        self.start_tick()
+
+    def start_tick(self):
+        """启动主循环定时器。收起状态下也必须跑, 否则没人把窗口叫回来。"""
+        if hasattr(self, "timer"):
+            return
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
 
     # ---------- GL ----------
     def initializeGL(self):
-        print("[GL] initializeGL, context =", self.context().isValid(),
-              self.context().format().majorVersion(), self.context().format().minorVersion())
+        ctx = self.context()
+        f = ctx.format()
+        prof = f.profile()
+        prof_i = getattr(prof, "value", prof)      # PyQt6 枚举要取 .value
+        prof_name = {0: "NoProfile", 1: "CoreProfile",
+                     2: "CompatibilityProfile"}.get(prof_i, prof)
+        print("[GL] initializeGL, context =", ctx.isValid(),
+              f.majorVersion(), f.minorVersion(), prof_name)
+
+        self._gl_linked = False
         self.prog = QOpenGLShaderProgram(self)
         ok_v = self.prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, VS)
         ok_f = self.prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, FS_DUO)
-        if not (ok_v and ok_f and self.prog.link()):
-            print("[GL] 着色器编译失败:\n", self.prog.log())
+        linked = bool(ok_v and ok_f and self.prog.link())
+        self._gl_linked = linked
+        if not linked:
+            # 不再让 paintGL 抛 GLError 直接把程序打死: 只打印并保持黑屏
+            print("[GL] 着色器编译/链接失败:\n" + self.prog.log())
+            print("[GL] 本项目着色器需要 OpenGL 3.3 core。若显卡驱动不支持, "
+                  "请更新显卡驱动或换一台支持 GL 3.3 的机器。")
+            self._gl_ready = True
+            return
         self.prog.bind()
+
+        # VAO/VBO (core profile 没有立即模式, 必须显式上传顶点)
+        self.vao = GL.glGenVertexArrays(1)
+        GL.glBindVertexArray(self.vao)
+        self.vbo = GL.glGenBuffers(1)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
+        # 两个三角形组成全屏四边形: xy(位置) + uv, 与 VS 的 location 0/1 对应
+        verts = (-1.0, -1.0, 0.0, 0.0,
+                  1.0, -1.0, 1.0, 0.0,
+                  1.0,  1.0, 1.0, 1.0,
+                 -1.0,  1.0, 0.0, 1.0)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, 4 * len(verts),
+                        struct.pack(f"{len(verts)}f", *verts), GL.GL_STATIC_DRAW)
+        stride = 4 * 4
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, stride, ctypes.c_void_p(0))
+        GL.glEnableVertexAttribArray(1)
+        GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, GL.GL_FALSE, stride, ctypes.c_void_p(8))
+        GL.glBindVertexArray(0)
 
         self.cap_tex = GL.glGenTextures(1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.cap_tex)
@@ -355,6 +608,11 @@ class GlassGLWidget(QOpenGLWidget):
             if not hasattr(self, "_warned_gl"):
                 self._warned_gl = True
                 print("[GL] paintGL 时 _gl_ready=False (initializeGL 未完成?)")
+            return
+        if not getattr(self, "_gl_linked", False):
+            # 着色器没链上: 画黑, 不调 uniform (否则 GLError 1282 会终止程序)
+            GL.glClearColor(0, 0, 0, 1)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
             return
         dpr = self.devicePixelRatioF()
         w = max(1, int(self.width() * dpr))
@@ -393,12 +651,20 @@ class GlassGLWidget(QOpenGLWidget):
         self._draw_quad()
 
     def _draw_quad(self):
-        GL.glBegin(GL.GL_QUADS)
-        GL.glTexCoord2f(0.0, 0.0); GL.glVertex2f(-1.0, -1.0)
-        GL.glTexCoord2f(1.0, 0.0); GL.glVertex2f(1.0, -1.0)
-        GL.glTexCoord2f(1.0, 1.0); GL.glVertex2f(1.0, 1.0)
-        GL.glTexCoord2f(0.0, 1.0); GL.glVertex2f(-1.0, 1.0)
-        GL.glEnd()
+        GL.glBindVertexArray(self.vao)
+        GL.glDrawArrays(GL.GL_TRIANGLE_FAN, 0, 4)
+        GL.glBindVertexArray(0)
+
+    def _wake_ready(self):
+        """每个 Qt tick 检查抓屏结果。DXGI 完成但桌面未变时可复用旧帧。"""
+        if self._wake_pending and self.capturer.done.is_set():
+            self._wake_pending = False
+            if self.capturer.latest() is not None:
+                return True
+        if not self._wake_pending:
+            self.capturer.kick()
+            self._wake_pending = True
+        return False
 
     # ---------- 主循环 ----------
     def tick(self):
@@ -424,15 +690,38 @@ class GlassGLWidget(QOpenGLWidget):
             mode = "手动"
         self.g += (target - self.g) * 0.22
 
-        # Overlay 常驻显示: 不再按浓度隐藏 (透明逻辑已按需求移除)
-        if not self.shown:
-            self.capturer.kick()
+        # ---- 按需显示: 浓度 ≈ 0 时收起玻璃, 并停掉抓屏与重绘 ----
+        # 常显时桌面永远是一张按 refresh_hz 回放的截图(拖动/滚动都不跟手, 而且抓屏
+        # 的 CPU 一直付着)。收起后桌面回到原生帧率, 只在开合过渡时才出现玻璃。
+        if self.g <= self.visible_eps:
+            self._wake_pending = False
+            if self.shown:
+                self.shown = False
+                self.hide()                 # 窗口不可见 -> paintGL 不再被触发
+            if self.hidden_refresh_hz > 0:  # 默认 0 = 收起期间完全不抓屏
+                now = time.time()
+                if now - self._last_kick >= 1.0 / self.hidden_refresh_hz:
+                    self._last_kick = now
+                    self.capturer.kick()
         else:
+            if not self.shown:
+                if not self._wake_ready():
+                    return
+                self.show()
+                self.shown = True
+                self._last_kick = time.time()
             now = time.time()
             if self.refresh_hz > 0 and now - self._last_kick >= 1.0 / self.refresh_hz:
                 self._last_kick = now
                 self.capturer.kick()
             self.update()
+            # 任务栏 (Shell_TrayWnd) 自己也带 WS_EX_TOPMOST。一旦你真实点击任务栏,
+            # 资源管理器就会把它插到"置顶带"的最前面, 压到本窗口之上, 于是玻璃盖不住
+            # 任务栏(任务栏不再跟着玻璃一起变)。而 WindowStaysOnTopHint 只在创建窗口
+            # 时声明一次, 之后 Qt 不会自动重申, 所以要周期性地重新置顶。
+            if self.keep_on_top_hz > 0 and now - self._last_topmost >= 1.0 / self.keep_on_top_hz:
+                self._last_topmost = now
+                self.raise_()          # 对 topmost 窗口 = 移到置顶带最前, 且不抢焦点
             if CFG.get("lock_at_close") and self.g > 0.985 and not self._locked:
                 self._locked = True
                 import ctypes
@@ -443,17 +732,29 @@ class GlassGLWidget(QOpenGLWidget):
         # 控制台实时单行重绘
         if time.time() - self._last_print > 0.1:
             self._last_print = time.time()
+            tag = "" if self.shown else " [收起]"
             if self.reader is not None:
-                a = angle if angle is not None else float("nan")
-                print(f"\r[{mode}] a={a:7.2f}° b={(other if other is not None else 0):7.2f}° "
-                      f"浓度={self.g*100:5.1f}%  [{status} {fps:3.0f}Hz] "
+                a, b = (angle, other) if CFG.get("axis", "a") == "a" else (other, angle)
+                a = float("nan") if a is None else a
+                b = float("nan") if b is None else b
+                print(f"\r[{mode}] a={a:7.2f}° b={b:7.2f}° "
+                      f"浓度={self.g*100:5.1f}%{tag}  [{status} {fps:3.0f}Hz] "
                       f"↑↓调节 r=切自动 Esc退出 ", end="", flush=True)
             else:
-                print(f"\r[{mode}] 玻璃={self.g*100:5.1f}%  "
+                print(f"\r[{mode}] 玻璃={self.g*100:5.1f}%{tag}  "
                       f"[↑↓调节 ←清空 →拉满 r=切自动 Esc退出] ", end="", flush=True)
 
 
 # ---------------------------------------------------------------- 入口
+def arg_value(name, default=None):
+    """取 `--name value` 形式的命令行参数。"""
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return default
+
+
 def main():
     smoke = "--smoke" in sys.argv
     selftest = "--selftest" in sys.argv
@@ -461,7 +762,9 @@ def main():
 
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
-    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    # core profile: Intel Windows 驱动的兼容模式只到 GLSL 1.20,
+    # 330 compatibility 着色器会被拒, 因此统一走 core。
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
     fmt.setSwapInterval(1)
     QSurfaceFormat.setDefaultFormat(fmt)
 
@@ -472,42 +775,72 @@ def main():
     region = {"left": geom.x(), "top": geom.y(),
               "width": int(geom.width() * dpr), "height": int(geom.height() * dpr)}
 
+    port_cfg = arg_value("--port", CFG.get("port", "auto"))
+    baud = int(CFG.get("baud", 115200))
+    backend = str(arg_value("--capture", CFG.get("capture", "auto"))).lower()
+    if backend not in ("auto", "dxgi", "gdi"):
+        print(f"[警告] 未知抓屏后端 {backend!r}, 回退 auto")
+        backend = "auto"
+
     kb = ManualControl()
     kb.start()
     if manual:
         reader = None
         print("[手动模式] 不连接 ESP")
     else:
-        reader = AngleReader(CFG["port"], int(CFG.get("baud", 115200)))
+        reader = AngleReader(port_cfg, baud)
         reader.start()
-    capturer = CaptureWorker(region)
+
+    capturer = CaptureWorker(region, backend=backend)
     capturer.start()
 
     print("=" * 60)
-    print("iPhone Duo 悬浮玻璃 · Windows 端 v3 (复刻着色器)")
+    print("iPhone Duo 悬浮玻璃 · Windows 端 v3.2 (OpenGL 3.3 core)")
     print(f"  铰链=屏幕底边  最大转角 {CFG.get('max_tilt_deg')}°  眼距 {CFG.get('eye_dist_h')}x屏高")
     print(f"  blur_spread={CFG.get('blur_spread')}  darkening={CFG.get('darkening')}  "
           f"taps<={CFG.get('max_taps')}")
+    print(f"  抓屏: {backend} (auto=优先 DXGI, 失败回退 GDI)  "
+          f"刷新 {CFG.get('refresh_hz')}Hz  窗口缩 {CFG.get('win_shrink_px', 1)}px")
+    if reader is not None:
+        if is_auto(port_cfg):
+            cands = candidate_ports()
+            print(f"  串口: 自动  (当前候选: {', '.join(cands) if cands else '无'})")
+        else:
+            print(f"  串口: {port_cfg} @{baud}")
     print("-" * 60)
-    print("  默认=正常显示(浓度0)。先点一下本控制台窗口再按键!")
+    print(f"  按需显示: 浓度 ≤ {CFG.get('visible_eps', 0.005)*100:.1f}% 时收起玻璃(停止抓屏/重绘)")
+    print("  默认=浓度0(桌面原生帧率, 不显示玻璃)。先点一下本控制台窗口再按键!")
     print("  ↑/↓ 调浓度   ← 清空   → 拉满   r 切换角度自动跟随   Esc 退出")
     print("=" * 60)
 
     if selftest:
-        time.sleep(4)
+        if reader:
+            nports = len(reader._ports())
+            reader.sample_ready.wait((SERIAL_PROBE_SECONDS + 1) * max(1, nports))
         angle, other, fps, st = reader.get() if reader else (None, None, 0.0, "manual")
-        capturer.kick()
-        capturer.done.wait(timeout=3)
+        deadline = time.monotonic() + 3
         frame = capturer.latest()
-        ok = (frame is not None) and (manual or angle is not None)
+        while frame is None and time.monotonic() < deadline:
+            capturer.kick()
+            capturer.done.wait(timeout=max(0, deadline - time.monotonic()))
+            frame = capturer.latest()
+            if frame is None:
+                time.sleep(0.02)
+        ser_ok = manual or angle is not None
+        ok = (frame is not None) and ser_ok
         print(f"[自检] 串口: {st} angle={angle} fps={fps:.0f} | "
               f"截屏: {'OK %dx%d' % (frame[1], frame[2]) if frame else 'FAIL'}"
-              f"  => {'PASS ✔' if ok else 'FAIL ✘'}")
+              f"  => {'PASS' if ok else 'FAIL'}")
+        if not ser_ok and not manual:
+            print("      串口没有角度数据: 确认板子已烧本项目固件, 且端口未被")
+            print("      其它程序(Thonny/Arduino 串口监视器)占用; 也可用 --port COMx 指定。")
         return 0 if ok else 1
 
-    widget = GlassGLWidget(screen, reader, capturer, manual=kb)
+    g_smoke = float(arg_value("--g", 0.85))
+    widget = GlassGLWidget(screen, reader, capturer,
+                           manual=HoldControl(g_smoke) if smoke else kb)
 
-    print("[运行] Overlay 常驻显示。Ctrl+C 退出。")
+    print("[运行] 按需显示: 浓度为 0 时玻璃收起(桌面原生帧率), 抬起才出现。Ctrl+C 退出。")
 
     if smoke:
         def dump_and_quit():
@@ -530,7 +863,8 @@ def main():
             try:
                 import mss as _mss
                 from PIL import Image as _Image
-                with _mss.MSS() as sct2:
+                MSS = getattr(_mss, "MSS", None) or _mss.mss
+                with MSS() as sct2:
                     shot = sct2.grab(region)
                     out2 = str(Path(__file__).with_name("smoke_frame.png"))
                     _Image.frombytes("RGB", shot.size, shot.rgb).save(out2)
@@ -541,17 +875,38 @@ def main():
 
         # 调试: 关闭后台重截(截图里会包含 Overlay 自身, 多次重截会反馈污染成纯色)
         widget.refresh_hz = 0.0
-        widget.g = 0.85
+        widget.g = g_smoke
         QTimer.singleShot(2000, dump_and_quit)
         widget.show()
         widget.shown = True
         capturer.kick()
     else:
-        widget.show()
-        widget.shown = True
-        capturer.kick()
-    app.exec()
-    return 0
+        # 按需显示: 启动时浓度 = 0, 先不显示窗口(桌面保持原生帧率)。
+        # 主循环定时器要在这里就启动 —— 收起状态下没人 show(), 得靠 tick 把它叫回来。
+        widget.shown = False
+        widget.start_tick()
+
+    # 着色器没链上就别留着全屏黑屏窗口让人莫名其妙。
+    # 注意: 按需显示下窗口可能一直没显示过(_gl_linked 还没机会生成), 必须等到
+    # 第一次 show() 之后再判定, 否则会误判成"驱动不支持"直接退出。
+    if not smoke:
+        gl_watch = QTimer()
+        gl_watch.setInterval(300)
+
+        def watch_gl():
+            if getattr(widget, "_gl_linked", False):
+                gl_watch.stop()
+                return
+            if getattr(widget, "_gl_ready", False):
+                gl_watch.stop()
+                print("\n[致命] 着色器未链接, 无法渲染。请更新显卡驱动。")
+                app.exit(2)
+
+        gl_watch.timeout.connect(watch_gl)
+        gl_watch.start()
+
+    rc = app.exec()
+    return rc if isinstance(rc, int) else 0
 
 
 if __name__ == "__main__":

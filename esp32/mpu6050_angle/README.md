@@ -113,12 +113,15 @@ build.bat -p COMx flash monitor  :: 烧录 + 看日志（COMx 换成你的端口
 
 ### 给另一块相同的板子刷（不用装 ESP-IDF）
 
-`prebuilt/` 里是编好的成品。换板子时**不需要重新编译、也不需要 ESP-IDF**，只要 esptool：
+`prebuilt/` 里是编好的成品。换**同一型号**的板子时**不需要重新编译、也不需要 ESP-IDF**，只要 esptool：
 
 | 文件 | 说明 |
 |---|---|
-| `prebuilt/WindowsDuo-esp32s3-n16r8.bin` | **合并镜像**：bootloader@0x0 + 分区表@0x8000 + 应用@0x10000，288,944 字节，烧到 **0x0** 即可 |
+| `prebuilt/WindowsDuo-esp32s3-n16r8.bin` | **合并镜像**（仅 YD-ESP32-S3 N16R8）：bootloader@0x0 + 分区表@0x8000 + 应用@0x10000，288,944 字节，烧到 **0x0** 即可 |
 | `prebuilt/flash_prebuilt.bat` | 一键烧录脚本（自动找带 esptool 的解释器；纯 ASCII + CRLF） |
+
+> ⚠️ **镜像只适用于 ESP32-S3 (N16R8)**。脚本固定刷上面那个 `.bin` 并以 `--chip esp32s3` 调用 esptool，
+> 换成原掌控板（ESP32 D0WDQ6）会因芯片不匹配而刷不进去——那块板子请先 `set-target esp32` 再自行编译。
 
 步骤（**两步按键都不能少**）：
 

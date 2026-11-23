@@ -232,7 +232,15 @@ esp32\mpu6050_angle\build.bat set-target esp32s3
 esp32\mpu6050_angle\build.bat -p COMx flash
 ```
 
-不想装 ESP-IDF 的话，用 `esp32\mpu6050_angle\prebuilt\flash_prebuilt.bat COMx` 直接烧编好的镜像。
+不想装 ESP-IDF 的话，可以直接烧编好的镜像：
+
+```bat
+esp32\mpu6050_angle\prebuilt\flash_prebuilt.bat COMx
+```
+
+> ⚠️ 这个预编译镜像**只适用于 YD-ESP32-S3 (N16R8)**：脚本固定刷 `WindowsDuo-esp32s3-n16r8.bin`
+> 并以 `--chip esp32s3` 调用 esptool，芯片不匹配会刷不进去。
+> **原掌控板**（`esp32` 目标）必须先 `set-target esp32` 再 `build.bat build`，改用自己编译的固件。
 
 ⚠️ 烧完**必须再按一下板上的 RESET**，芯片才会从 Flash 启动（USB-JTAG 板子上 `--after hard_reset` 无效）。
 
@@ -263,7 +271,12 @@ python esp32\debug_view.py --port COMx
 > 例如模块沿 X 轴安装时，动盖子 `a` 几乎不变而 `b` 变化很大 → 用 `"axis": "b"`，**不需要改固件**。
 > `win/calibration-yd-esp32s3.example.json` 里有一份这种安装方式的标定示例供参考。
 
-标定时把两个位置各静止十几秒取均值，**并且 `angle_open` 要取该位置多次测量中最靠近"开"一侧的值**，让全部开盖姿态都落进死区，避免噪声导致窗口闪烁。
+标定时把两个位置各静止十几秒取均值。`angle_open` 应当取那组读数里**最靠近闭合侧**的那个值（示例中以 `angle_closed` 为参照，取数值上离它最近的一个），这样所有开盖姿态算出的比值都 ≤ 0，稳定落在死区里，不会因噪声让窗口闪烁。
+
+> 推导：`ratio = (angle - angle_open) / (angle_closed - angle_open)`。
+> 若全开读数落在 `-79.3 ~ -74.2`，而 `angle_closed = -36.7`：
+> 取 `angle_open = -74.2` 时，`-79.3` 算出负值、`-74.2` 恰为 0 —— 全部 ≤ 0，安全；
+> 若取 `angle_open = -79.3`，则 `-74.2` 会算出约 `0.12`，超过默认 `glass_start = 0.1`，全开时也会冒出玻璃。
 
 映射结果应当**单调**：全开 0%、中途逐渐增大、合到底接近 100%。若中间某段跳变或反向，说明轴选错了或两个标定值填反了。
 

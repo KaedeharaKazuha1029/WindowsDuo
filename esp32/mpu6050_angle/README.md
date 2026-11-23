@@ -64,42 +64,42 @@ GPIO48(板载 RGB)、GPIO35~37(N16R8 的 8MB PSRAM 可能占用)、GPIO26~34(内
 
 ```bat
 cd /d <本仓库>\esp32\mpu6050_angle
-REM First build or board change: use esp32 for the original controller.
-build.bat set-target esp32s3
-build.bat
-build.bat -p COM5 flash monitor
+build.bat set-target esp32s3     :: 首次构建/换板时选目标（原掌控板用 esp32）
+build.bat                        :: 只编译
+build.bat -p COMx flash monitor  :: 烧录 + 看日志（COMx 换成你的端口）
 ```
 
-**B. 直接调 `run_build.py`**（内部会设好 IDF_PATH/PATH 再执行 idf.py，规避本机 shell 不透传 IDF 环境的问题）
+**B. 直接调 `run_build.py`**（内部会设好 IDF_PATH/PATH 再执行 idf.py，规避 shell 不透传 IDF 环境的问题）
 
 ```bat
-D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py set-target esp32s3
-D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py build
-D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py -p COM5 flash monitor
+:: 用 ESP-IDF 自带的 python 解释器运行，例如：
+<IDF安装目录>\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py set-target esp32s3
+<IDF安装目录>\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py build
+<IDF安装目录>\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py -p COMx flash monitor
 ```
 
-> `run_build.py` 会自动探测 `D:\Espressif` 下的 IDF 版本、python 环境与各工具目录，
-> 也会把工作目录切到自己所在的工程（不再写死原作者的 IDF 5.4.4 与 `D:\KaiFa\find\duo\esp32`）。
+> `run_build.py` 会自动探测 `<ESP_ROOT>`（默认 `D:\Espressif`，可用环境变量覆盖）下的 IDF 版本、
+> python 环境与各工具目录，也会把工作目录切到自己所在的工程，无需手改路径。
 
 ### 进下载模式（烧录前必须）
 
-芯片必须处于 ROM 下载模式才能烧录。**本机实测有效的完整流程**（YD-ESP32-S3）：
+芯片必须处于 ROM 下载模式才能烧录。**在 YD-ESP32-S3 上验证过的完整流程**：
 
 1. **按住板上 BOOT 键** → 点一下 **RESET/EN**（或重新插拔 USB）→ **松开 BOOT**；
-2. 松手后会出现一个**新的串口**，它是 ROM 的 USB Serial/JTAG：本机实测 PID 从 `303A:8166`（CircuitPython）变成
-   **`303A:1001`**，端口号也可能变（实测是 **COM3**，而原来是 COM5）。用 `idf.py -p COMx` 指定它；
-3. 烧录：`idf.py -p COM3 flash`，或直接用 esptool（`build\flash_args` 里已经写好参数）：
+2. 松手后会出现一个**新的串口**，它是 ROM 的 USB Serial/JTAG：PID 从 `303A:8166`（CircuitPython）
+   变成 **`303A:1001`**，端口号也可能变。用 `idf.py -p COMx` 指定它；
+3. 烧录：`idf.py -p COMx flash`，或直接用 esptool（`build\flash_args` 里已经写好参数）：
    ```
-   esptool --chip esp32s3 --port COM3 --before usb_reset --after no_reset write_flash @flash_args
+   esptool --chip esp32s3 --port COMx --before usb_reset --after no_reset write_flash @flash_args
    ```
    （在 `build` 目录下执行。注意用 `--before usb_reset`：USB-JTAG 口的 DTR/RTS 是虚拟线，`no_reset`/`default_reset` 那条路会中途掉线报 `Cannot configure port`。）
 4. **烧完必须手动按一下 RESET/EN（或拔插一次 USB）**，芯片才会从 Flash 启动应用。
    ⚠️ 这一步不能省：USB-JTAG 板子上 `--after hard_reset` 只是拉 RTS 虚拟线、对芯片无效，
    `esptool run` 也只会回一句 `Staying in bootloader`，芯片会一直停在下载模式（表现为"烧录成功但串口一行日志都没有"）。
-5. 启动后再 `idf.py -p COM3 monitor` 看日志。
+5. 启动后再 `idf.py -p COMx monitor` 看日志。
 
 **排障**：如果按 BOOT+RESET 后**没有**出现新串口：
-- 打开设备管理器看有没有带感叹号的"未知 USB 设备"；ESP32-S3 的 USB-Serial-JTAG 靠 Windows 的 CDC 驱动，必要时装 ESP-IDF 自带的驱动（`D:\Espressif\tools\idf-driver\...`）；
+- 打开设备管理器看有没有带感叹号的"未知 USB 设备"；ESP32-S3 的 USB-Serial-JTAG 靠系统 CDC 驱动，必要时装 ESP-IDF 自带的驱动（`<ESP_ROOT>\tools\idf-driver\`）；
 - 或者退到最经典的路子：用 USB-TTL 串口模块接 **UART0（GPIO43=TX / GPIO44=RX，共地）**，烧录时 GPIO0 拉低，`idf.py -p COMx flash`（此时要记得把控制台改回 UART0，见下）。
 
 > 另外：**CircuitPython 的软复位进下载模式在本板无效**。用
@@ -123,11 +123,11 @@ D:\Espressif\python_env\idf5.3_py3.11_env\Scripts\python.exe run_build.py -p COM
 步骤（**两步按键都不能少**）：
 
 1. 按住 **BOOT** → 点一下 **RESET** → 松开 **BOOT**（进下载模式，端口 PID 变 `303A:1001`）
-2. `esp32\mpu6050_angle\prebuilt\flash_prebuilt.bat COM3`
-   （不带端口号直接运行会列出当前串口；换板子后串口号可能不是 COM3，先看设备管理器）
+2. `esp32\mpu6050_angle\prebuilt\flash_prebuilt.bat COMx`
+   （不带端口号直接运行会列出当前串口；换板子或换 USB 口后串口号可能变，先看设备管理器）
 3. **按一下 RESET**，芯片才会从 Flash 启动应用
 
-没装 esptool 的话：`python -m pip install esptool`。要彻底清空再写：`flash_prebuilt.bat COM3 erase`（擦 16MB 约 30s）。
+没装 esptool 的话：`python -m pip install esptool`。要彻底清空再写：`flash_prebuilt.bat COMx erase`（擦 16MB 约 30s）。
 
 **改了固件代码后要重新生成合并镜像**：
 
@@ -146,28 +146,25 @@ esptool --chip esp32s3 merge_bin -o ..\prebuilt\WindowsDuo-esp32s3-n16r8.bin --f
 
 - **传感器标定跟"模块怎么贴"有关，跟板子无关**：同一台笔记本、同一种贴法 → `win/config.json` 的 `angle_closed / angle_open` 直接沿用；换笔记本或换贴法 → 重新做两点标定。
 - **陀螺仪零漂校准是每次上电自动做的**（3 秒静止），换板子不用改任何参数。
-- **两块相同的板子同时插在电脑上时**，Windows 端的 `port: "auto"` 无法区分（两块都排第一优先级），要在 `win/config.json` 里显式写 `"port": "COM4"` 这类具体端口。
-
-
+- **两块相同的板子同时插在电脑上时**，Windows 端的 `port: "auto"` 无法区分（两块都排第一优先级），要在 `win/config.json` 里显式写 `"port": "COMx"` 这类具体端口。
 
 ## 五、验证角度输出
 
 ```bat
 :: 板子烧好后（固件会先做 3 秒零漂校准，期间保持静止）
-python esp32\debug_view.py --port COM3
+python esp32\debug_view.py --port COMx
 ```
 
-> 端口号按实际情况填：本机实测烧了本项目固件后是 **COM3**（`303A:1001`）；换板子/换 USB 口可能变成 COM4、COM5。
-> 不带 `--port` 时默认 COM3。**注意串口是独占的**——`debug_view.py` 开着时 Windows 端打不开串口，反之亦然。
+> `COMx` 换成你的端口（设备管理器里查）。**注意串口是独占的**——`debug_view.py` 开着时 Windows 端打不开串口，反之亦然。
 
 `debug_view.py` 实时显示主轴角度 `a`、副轴 `b`、进度条与频率。
 
-`esp32\read_serial.py` 里的端口**写死 COM3**，用之前先改成你的口（或直接用 debug_view.py）。
+`esp32\read_serial.py` 里的端口是写死的，用之前换成你的口（或直接用 `debug_view.py --port`）。
 
 启动日志期望：
 
 ```
-I (xxx) mpu6050: WHO_AM_I = 0x68 (期望 0x68)
+I (xxx) mpu6050: WHO_AM_I = 0x70 (MPU6500)
 I (xxx) mpu6050: >>> 陀螺仪校准中... 请保持模块完全静止 3 秒 <<<
 I (xxx) mpu6050: 校准完成! 零漂偏移: gx=.. gy=.. gz=..
 I (xxx) mpu6050: MPU6050 初始化 OK [ESP32-S3 (YD-ESP32-S3 N16R8)] (I2C: SDA=GPIO8 SCL=GPIO9 @400kHz)

@@ -157,10 +157,15 @@ esptool --chip esp32s3 merge_bin -o ..\prebuilt\WindowsDuo-esp32s3-n16r8.bin --f
 
 ```bat
 :: 板子烧好后（固件会先做 3 秒零漂校准，期间保持静止）
+python esp32\debug_view.py
+
+:: 或者指定端口
 python esp32\debug_view.py --port COMx
 ```
 
-> `COMx` 换成你的端口（设备管理器里查）。**注意串口是独占的**——`debug_view.py` 开着时 Windows 端打不开串口，反之亦然。
+> 不带 `--port` 时会自动挑一个最可能是本项目的串口（优先级 Espressif 原生 USB > CH340 > CP210x > 其它），
+> 并在启动时打印选中的是哪个；选错了再用 `--port COMx` 指定。
+> **注意串口是独占的**——`debug_view.py` 开着时 Windows 端打不开串口，反之亦然。
 
 `debug_view.py` 实时显示主轴角度 `a`、副轴 `b`、进度条与频率。
 

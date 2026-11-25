@@ -258,8 +258,11 @@ I (xxx) mpu6050: 开始输出角度 @100Hz: {"a":主角度,"b":副轴角度}
 **4. 标定角度（关键，不做这步玻璃不会动）**
 
 ```bat
-python esp32\debug_view.py --port COMx
+python esp32\debug_view.py
 ```
+
+不带 `--port` 会自动挑一个最可能是本项目的串口（Espressif 原生 USB > CH340 > CP210x > 其它，启动时会打印选了哪个）；
+想指定就加 `--port COMx`。
 
 - 开合几次屏幕，在调试输出中选随盖子变化明显的轴，把它写入 `win/config.json` 的 `axis`。默认沿用原掌控板的 `a` 轴。
 - 笔记本全开和合到最合时各静置片刻，从**同一个选定轴**读取两个角度，分别填入 `angle_open` 和 `angle_closed`。两个值可以递增或递减，但必须不同。

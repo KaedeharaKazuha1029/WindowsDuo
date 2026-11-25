@@ -54,7 +54,8 @@ cp esp32/circuitpython/code.py /Volumes/CIRCUITPY/code.py
 ### 3. 验证
 
 ```bash
-python esp32/debug_view.py --port COMx
+python esp32/debug_view.py            # 自动挑串口
+python esp32/debug_view.py --port COMx  # 或手动指定
 ```
 
 期望输出（JSON 格式与 ESP-IDF 版一致）：

@@ -63,22 +63,24 @@ GPIO48(板载 RGB)、GPIO35~37(N16R8 的 8MB PSRAM 可能占用)、GPIO26~34(内
 **A. 用 `build.bat`（会自动找到 IDF 的 python 解释器，最省事）**
 
 ```bat
-cd /d <本仓库>\esp32\mpu6050_angle
+cd /d PATH_TO_REPO\esp32\mpu6050_angle
 build.bat set-target esp32s3     :: 首次构建/换板时选目标（原掌控板用 esp32）
 build.bat                        :: 只编译
 build.bat -p COMx flash monitor  :: 烧录 + 看日志（COMx 换成你的端口）
 ```
 
+`PATH_TO_REPO` 换成你克隆下来的仓库目录。
+
 **B. 直接调 `run_build.py`**（内部会设好 IDF_PATH/PATH 再执行 idf.py，规避 shell 不透传 IDF 环境的问题）
 
 ```bat
-:: 用 ESP-IDF 自带的 python 解释器运行，例如：
-<IDF安装目录>\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py set-target esp32s3
-<IDF安装目录>\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py build
-<IDF安装目录>\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py -p COMx flash monitor
+:: 用 ESP-IDF 自带的 python 解释器运行，把 IDF_ROOT 换成你的 ESP-IDF 安装目录，例如 D:\Espressif
+IDF_ROOT\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py set-target esp32s3
+IDF_ROOT\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py build
+IDF_ROOT\python_env\idf5.x_py3.11_env\Scripts\python.exe run_build.py -p COMx flash monitor
 ```
 
-> `run_build.py` 会自动探测 `<ESP_ROOT>`（默认 `D:\Espressif`，可用环境变量覆盖）下的 IDF 版本、
+> `run_build.py` 会自动探测 `ESP_ROOT`（默认 `D:\Espressif`，可用同名环境变量覆盖）下的 IDF 版本、
 > python 环境与各工具目录，也会把工作目录切到自己所在的工程，无需手改路径。
 
 ### 进下载模式（烧录前必须）

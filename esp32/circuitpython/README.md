@@ -32,10 +32,11 @@
 先让板子进入下载模式：**按住 BOOT → 点一下 RESET → 松开 BOOT**（此时端口 PID 变为 `303A:1001`）。
 
 ```bash
-esptool --chip esp32s3 --port COMx --before usb_reset --after no_reset write_flash 0x0 <下载的固件.bin>
+esptool --chip esp32s3 --port COMx --before usb_reset --after no_reset write_flash 0x0 FIRMWARE.bin
 ```
 
-（`COMx` 换成你的端口；没装 esptool 就 `pip install esptool`。）
+把 `COMx` 换成你的端口、`FIRMWARE.bin` 换成刚下载的文件名（可直接把文件拖进终端）。
+没装 esptool 的话先 `pip install esptool`。
 
 刷完后**按一下 RESET** 启动。成功后系统会出现一个 `CIRCUITPY` U 盘和一个新串口（PID `303A:8166`，端口号可能和烧录前不同）。
 

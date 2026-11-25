@@ -265,10 +265,15 @@ python esp32\debug_view.py --port COMx
 - 笔记本全开和合到最合时各静置片刻，从**同一个选定轴**读取两个角度，分别填入 `angle_open` 和 `angle_closed`。两个值可以递增或递减，但必须不同。
 - YD-ESP32-S3 投稿者的模块沿 X 轴安装，使用 [b 轴标定示例](win/calibration-yd-esp32s3.example.json)。可将示例中的三个字段复制进自己的配置，其余运行参数沿用。换贴法后应重新测量。
 
-方向不对就改固件顶部重烧：`a` 不动而 `b` 在动 → `HINGE_AXIS` 改 `AXIS_X`；合盖时 `a` 反而变小 → `HINGE_SIGN` 改 `-1`。
+**关于用哪个轴**：固件同时输出 `a`（绕 Y 轴）和 `b`（绕 X 轴），哪个随开合变化明显就用哪个，写进 `win/config.json` 的 `"axis"`。
 
-> **关于用哪个轴**：固件同时输出 `a`（绕 Y 轴）和 `b`（绕 X 轴）。哪个随开合变化明显就用哪个，写进 `win/config.json` 的 `"axis"`。
-> 例如模块沿 X 轴安装时，动盖子 `a` 几乎不变而 `b` 变化很大 → 用 `"axis": "b"`，**不需要改固件**。
+例如模块沿 X 轴安装时，动盖子 `a` 几乎不变而 `b` 变化很大 → 用 `"axis": "b"`，**不需要改固件**：
+Windows 端按 `axis` 取轴、再用 `angle_open` / `angle_closed` 做比值，开合方向也由这两个端点吸收，
+所以合盖时角度变小同样不用管。详见 [b 轴标定示例](win/calibration-yd-esp32s3.example.json)。
+
+> 只有当你想让 ESP-IDF 版走**带互补滤波的主轴**时才需要动固件：ESP-IDF 只对 `a` 滤波，`b` 是原始加速度角。
+> 这时才去改固件顶部的 `HINGE_AXIS`（改走哪根轴）或 `HINGE_SIGN`（改角度方向）并重烧。
+> CircuitPython 版两轴都做了滤波，没有这个区别。
 > `win/calibration-yd-esp32s3.example.json` 里有一份这种安装方式的标定示例供参考。
 
 标定时把两个位置各静止十几秒取均值。`angle_open` 应当取那组读数里**最靠近闭合侧**的那个值（示例中以 `angle_closed` 为参照，取数值上离它最近的一个），这样所有开盖姿态算出的比值都 ≤ 0，稳定落在死区里，不会因噪声让窗口闪烁。

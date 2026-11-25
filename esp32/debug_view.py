@@ -1,11 +1,13 @@
 """
-角度流调试查看器 v2（COM3 / 115200）
+角度流调试查看器 v2（默认自动检测串口，115200）
 实时显示: 主轴角度 a | 副轴角度 b(判断安装方向用) | 进度条 | 频率 | 波动范围
 按 Ctrl+C 退出。
 
 用法:
-  D:\Espressif\python_env\idf5.4_py3.11_env\Scripts\python.exe debug_view.py
-可选: --port COM3 --baud 115200
+  python debug_view.py                       # 自动检测串口
+  python debug_view.py --port COM3           # 指定串口
+  python debug_view.py --port COM3 --baud 115200
+Windows 上也可以直接双击 debug_view.bat（会自动挑选装了 pyserial 的解释器）。
 """
 import argparse
 import json
@@ -32,7 +34,7 @@ def pose(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="COM3")
+    ap.add_argument("--port", default="COM3", help="串口，例如 COM3")
     ap.add_argument("--baud", default=115200, type=int)
     args = ap.parse_args()
 

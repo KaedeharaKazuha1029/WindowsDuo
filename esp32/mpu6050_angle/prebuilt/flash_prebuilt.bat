@@ -16,7 +16,7 @@ REM      the port CHANGES: PID becomes 303A:1001 (often still COM3,
 REM      but a second board may get COM4/COM5 - check Device Manager)
 REM  STEP 2 (after running): tap RESET once so the chip boots the app
 REM ============================================================
-setlocal
+setlocal enabledelayedexpansion
 set "PORT=%~1"
 set "DO_ERASE=%~2"
 set "IMG=%~dp0WindowsDuo-esp32s3-n16r8.bin"
@@ -37,13 +37,24 @@ if "%PORT%"=="" (
     exit /b 1
 )
 
-REM --- pick an interpreter that has esptool ---
+REM --- pick the first interpreter that actually has esptool ---
+REM IDF interpreters are tried first (newest env first), but each must pass
+REM "import esptool" -- otherwise fall through to system Python.
 set "PYCMD="
 for /f "delims=" %%F in ('dir /b /s /o-n "D:\Espressif\python_env\idf*_env\Scripts\python.exe" 2^>nul') do (
-    if not defined PYCMD set PYCMD="%%F"
+    if not defined PYCMD (
+        "%%F" -c "import esptool" >nul 2>nul
+        if not errorlevel 1 set PYCMD="%%F"
+    )
 )
-if not defined PYCMD for /f "delims=" %%i in ('py -3 -c "import esptool; print(1)" 2^>nul') do set PYCMD=py -3
-if not defined PYCMD for /f "delims=" %%i in ('python -c "import esptool; print(1)" 2^>nul') do set PYCMD=python
+if not defined PYCMD (
+    py -3 -c "import esptool" >nul 2>nul
+    if not errorlevel 1 set PYCMD=py -3
+)
+if not defined PYCMD (
+    python -c "import esptool" >nul 2>nul
+    if not errorlevel 1 set PYCMD=python
+)
 if not defined PYCMD (
     echo [ERROR] esptool not found. Install it with:
     echo             python -m pip install esptool

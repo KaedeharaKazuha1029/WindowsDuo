@@ -43,13 +43,23 @@ esptool --chip esp32s3 --port COMx --before usb_reset --after no_reset write_fla
 ### 2. 把 `code.py` 拷到 CIRCUITPY 盘根目录
 
 ```bash
-# Windows
+# Windows（X: 换成 CIRCUITPY 的盘符）
 copy /Y esp32\circuitpython\code.py X:\code.py
-# macOS / Linux
+
+# macOS
 cp esp32/circuitpython/code.py /Volumes/CIRCUITPY/code.py
+
+# Linux —— 挂载点因发行版而异，先用 lsblk / mount 确认，常见为：
+#   /media/$USER/CIRCUITPY      （多数桌面环境）
+#   /run/media/$USER/CIRCUITPY  （Fedora 等）
+#   /media/CIRCUITPY
+cp esp32/circuitpython/code.py /media/$USER/CIRCUITPY/code.py
 ```
 
-（`X:` 换成 CIRCUITPY 的盘符。**不需要 `lib` 目录**，代码只用 `board / busio / math / time / supervisor` 这几个内置模块。）
+（**不需要 `lib` 目录**，代码只用 `board / busio / math / time / supervisor` 这几个内置模块。）
+
+> Linux 上如果提示目标不存在，执行 `lsblk -o NAME,LABEL,MOUNTPOINT` 找到标着 `CIRCUITPY` 的挂载点，
+> 把上面命令里的路径换成它即可。
 
 ### 3. 验证
 

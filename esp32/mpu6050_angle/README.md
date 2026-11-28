@@ -64,12 +64,22 @@ GPIO48(板载 RGB)、GPIO35~37(N16R8 的 8MB PSRAM 可能占用)、GPIO26~34(内
 
 ```bat
 cd /d PATH_TO_REPO\esp32\mpu6050_angle
-build.bat set-target esp32s3     :: 首次构建/换板时选目标（原掌控板用 esp32）
-build.bat                        :: 只编译
-build.bat -p COMx flash monitor  :: 烧录 + 看日志（COMx 换成你的端口）
+
+:: 首次构建 / 换板时选目标（原掌控板用 esp32）
+build.bat set-target esp32s3
+
+:: 只编译
+build.bat
+
+:: 烧录 + 看日志（COMx 换成你的端口）
+build.bat -p COMx flash monitor
 ```
 
 `PATH_TO_REPO` 换成你克隆下来的仓库目录。
+
+> ⚠️ 这三行**不要写成行尾注释**（`build.bat build   :: 说明`）。`build.bat` 会把 `%*` 原样转发给
+> `run_build.py` → `idf.py`，行尾的 `::` 和说明文字会被当成参数，导致 `idf.py` 报 unknown command。
+> 注释要单独占一行，或在**不传参**的命令后面用 `REM`。
 
 **B. 直接调 `run_build.py`**（内部会设好 IDF_PATH/PATH 再执行 idf.py，规避 shell 不透传 IDF 环境的问题）
 

@@ -128,15 +128,18 @@ def acc_angle_x(ax, ay, az):
 
 
 def mpu_init():
-    """WHO_AM_I 只做提示，不做拒绝：
-    本机这块模块实测是 0x70（MPU6500 系），而 MPU6500/6050/9250 的寄存器映射与
-    量程换算一致，所以照同一套寄存器继续跑就行（ESP-IDF 版也是只打印不校验）。"""
+    """WHO_AM_I 只做提示，不做拒绝。
+
+    市面上标着 MPU6050 的模块有不少实际是 MPU6500(0x70) / MPU9250(0x71) 系，
+    这些芯片的寄存器映射与量程换算一致（ACCEL_XOUT_H=0x3B、±2g→16384、±250dps→131），
+    所以统一按同一套寄存器继续跑，避免好模块被卡在"未就绪"重试里。
+    （ESP-IDF 版同样是只打印不校验。）"""
     who = _r(REG_WHO_AM_I, 1)[0]
     names = {0x68: "MPU6050", 0x70: "MPU6500", 0x71: "MPU9250/MPU6515", 0x73: "MPU9255"}
     if who in names:
         log("[mpu] WHO_AM_I = 0x%02X (%s)" % (who, names[who]))
     else:
-        log("[mpu] WHO_AM_I = 0x%02X（不是常见型号，仍按同一套寄存器继续）" % who)
+        log("[mpu] WHO_AM_I = 0x%02X（非常见型号，仍按同一套寄存器继续）" % who)
     _w(REG_PWR_MGMT1, 0x00)
     time.sleep(0.05)
     _w(REG_SMPLRT_DIV, 0x00)
